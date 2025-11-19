@@ -1,504 +1,97 @@
-package com.hsbc.trade.transfer.service.impl;
-
-import com.hsbc.trade.ErrorCodes;
-import com.hsbc.trade.constant.HTTPRequestHeaderConstants;
-import com.hsbc.trade.transfer.config.CustomerLimitConfig;
-import com.hsbc.trade.transfer.domain.limit.ContactEnquiryParams;
-import com.hsbc.trade.transfer.domain.limit.LimitEnquiryResponse;
-import com.hsbc.trade.transfer.domain.limit.TransactionLimitDetailList;
-import com.hsbc.trade.transfer.enums.ExceptionMessageEnum;
-import com.hsbc.trade.transfer.exception.TransferLimitExceededException;
-import com.hsbc.trade.transfer.retrievetransferamount.RetrieveTransferAmountResponse;
-import com.hsbc.trade.transfer.retrievetransferlimit.RetrieveTransferLimitResponse;
-import com.hsbc.trade.transfer.retrievetransferlimit.RetrieveTransferLimitResponseData;
-import com.hsbc.trade.utils.E2ETrustTokenUtil;
-import com.hsbc.trade.utils.JacksonUtil;
-import com.hsbc.trade.service.RestClientService;
-import jakarta.ws.rs.InternalServerErrorException;
-import org.junit.jupiter.api.BeforeEach;
-import org.junit.jupiter.api.Test;
-import org.junit.jupiter.api.extension.ExtendWith;
-import org.mockito.Mock;
-import org.mockito.MockedStatic;
-import org.mockito.junit.jupiter.MockitoExtension;
-
-import java.math.BigDecimal;
-import java.net.URI;
-import java.time.LocalDate;
-import java.time.ZonedDateTime;
-import java.util.*;
-
-import static org.junit.jupiter.api.Assertions.*;
-import static org.mockito.ArgumentMatchers.*;
-import static org.mockito.Mockito.*;
-
-@ExtendWith(MockitoExtension.class)
-class TradeLimitServiceImplTest {
-
-    @Mock
-    private RestClientService restClientService;
-
-    @Mock
-    private E2ETrustTokenUtil e2ETrustTokenUtil;
-
-    @Mock
-    private CustomerLimitConfig customerLimitConfig;
-
-    private TradeLimitServiceImpl tradeLimitService;
-
-    private Map<String, String> requestHeaders;
-
-    @BeforeEach
-    void setUp() {
-        tradeLimitService = new TradeLimitServiceImpl(restClientService, e2ETrustTokenUtil, customerLimitConfig);
-        requestHeaders = new HashMap<>();
-        requestHeaders.put(HTTPRequestHeaderConstants.X_HSBC_Customer_Id, "test-customer-id");
-    }
-
-    // Test retrieveLimitations method - Happy Path
-    @Test
-    void testRetrieveLimitations_HappyPath() throws Exception {
-        // Setup config
-        when(customerLimitConfig.getDailyAmount()).thenReturn(new BigDecimal("10000"));
-        when(customerLimitConfig.getMonthlyAmount()).thenReturn(new BigDecimal("50000"));
-        when(customerLimitConfig.getYearlyAmount()).thenReturn(new BigDecimal("500000"));
-        when(customerLimitConfig.getMonthlyCount()).thenReturn(10);
-
-        // Mock limit enquiry response
-        LimitEnquiryResponse limitEnquiryResponse = createMockLimitEnquiryResponse();
-        when(restClientService.get(anyString(), anyMap(), eq(LimitEnquiryResponse.class), anyInt(), anyBoolean()))
-                .thenReturn(limitEnquiryResponse);
-
-        // Mock transfer amount response
-        RetrieveTransferAmountResponse transferAmountResponse = createMockTransferAmountResponse();
-        when(restClientService.get(eq(tradeLimitService.srbpOnlineUrl + "/trade-amount"), anyMap(), eq(RetrieveTransferAmountResponse.class), anyInt(), anyBoolean()))
-                .thenReturn(transferAmountResponse);
-
-        // Mock E2E token
-        when(e2ETrustTokenUtil.getE2ETrustToken()).thenReturn("mock-token");
-
-        RetrieveTransferLimitResponse response = tradeLimitService.retrieveLimitations(requestHeaders);
-
-        assertNotNull(response);
-        assertNotNull(response.getData());
-        assertEquals(new BigDecimal("10000"), response.getData().getMaxDailyLimitedAmount());
-        assertEquals(new BigDecimal("9000"), response.getData().getAvailableTodayAmount()); // 10000 - 1000
-    }
-
-    // Test retrieveLimitations - Daily Limit Exceeded
-    @Test
-    void testRetrieveLimitations_DailyLimitExceeded() {
-        // Setup config
-        when(customerLimitConfig.getDailyAmount()).thenReturn(new BigDecimal("1000"));
-        when(customerLimitConfig.getMonthlyAmount()).thenReturn(new BigDecimal("50000"));
-        when(customerLimitConfig.getYearlyAmount()).thenReturn(new BigDecimal("500000"));
-        when(customerLimitConfig.getMonthlyCount()).thenReturn(10);
-
-        // Mock limit enquiry response with exceeded daily limit
-        LimitEnquiryResponse limitEnquiryResponse = createMockLimitEnquiryResponseExceededDaily();
-        when(restClientService.get(anyString(), anyMap(), eq(LimitEnquiryResponse.class), anyInt(), anyBoolean()))
-                .thenReturn(limitEnquiryResponse);
-
-        // Mock transfer amount response
-        RetrieveTransferAmountResponse transferAmountResponse = createMockTransferAmountResponse();
-        when(restClientService.get(eq(tradeLimitService.srbpOnlineUrl + "/trade-amount"), anyMap(), eq(RetrieveTransferAmountResponse.class), anyInt(), anyBoolean()))
-                .thenReturn(transferAmountResponse);
-
-        // Mock E2E token
-        when(e2ETrustTokenUtil.getE2ETrustToken()).thenReturn("mock-token");
-
-        TransferLimitExceededException exception = assertThrows(TransferLimitExceededException.class, () -> {
-            tradeLimitService.retrieveLimitations(requestHeaders);
-        });
-
-        assertTrue(exception.getMessage().contains("daily"));
-    }
-
-    // Test retrieveLimitations - Monthly Count Exceeded
-    @Test
-    void testRetrieveLimitations_MonthlyCountExceeded() {
-        // Setup config
-        when(customerLimitConfig.getDailyAmount()).thenReturn(new BigDecimal("10000"));
-        when(customerLimitConfig.getMonthlyAmount()).thenReturn(new BigDecimal("50000"));
-        when(customerLimitConfig.getYearlyAmount()).thenReturn(new BigDecimal("500000"));
-        when(customerLimitConfig.getMonthlyCount()).thenReturn(5);
-
-        // Mock limit enquiry response
-        LimitEnquiryResponse limitEnquiryResponse = createMockLimitEnquiryResponse();
-        when(restClientService.get(anyString(), anyMap(), eq(LimitEnquiryResponse.class), anyInt(), anyBoolean()))
-                .thenReturn(limitEnquiryResponse);
-
-        // Mock transfer amount response with exceeded monthly count
-        RetrieveTransferAmountResponse transferAmountResponse = createMockTransferAmountResponseExceededMonthlyCount();
-        when(restClientService.get(eq(tradeLimitService.srbpOnlineUrl + "/trade-amount"), anyMap(), eq(RetrieveTransferAmountResponse.class), anyInt(), anyBoolean()))
-                .thenReturn(transferAmountResponse);
-
-        // Mock E2E token
-        when(e2ETrustTokenUtil.getE2ETrustToken()).thenReturn("mock-token");
-
-        TransferLimitExceededException exception = assertThrows(TransferLimitExceededException.class, () -> {
-            tradeLimitService.retrieveLimitations(requestHeaders);
-        });
-
-        assertTrue(exception.getMessage().contains("monthly count"));
-    }
-
-    // Test retrieveLimitations - Monthly Amount Exceeded
-    @Test
-    void testRetrieveLimitations_MonthlyAmountExceeded() {
-        // Setup config
-        when(customerLimitConfig.getDailyAmount()).thenReturn(new BigDecimal("10000"));
-        when(customerLimitConfig.getMonthlyAmount()).thenReturn(new BigDecimal("5000"));
-        when(customerLimitConfig.getYearlyAmount()).thenReturn(new BigDecimal("500000"));
-        when(customerLimitConfig.getMonthlyCount()).thenReturn(10);
-
-        // Mock limit enquiry response
-        LimitEnquiryResponse limitEnquiryResponse = createMockLimitEnquiryResponse();
-        when(restClientService.get(anyString(), anyMap(), eq(LimitEnquiryResponse.class), anyInt(), anyBoolean()))
-                .thenReturn(limitEnquiryResponse);
-
-        // Mock transfer amount response with exceeded monthly amount
-        RetrieveTransferAmountResponse transferAmountResponse = createMockTransferAmountResponseExceededMonthlyAmount();
-        when(restClientService.get(eq(tradeLimitService.srbpOnlineUrl + "/trade-amount"), anyMap(), eq(RetrieveTransferAmountResponse.class), anyInt(), anyBoolean()))
-                .thenReturn(transferAmountResponse);
-
-        // Mock E2E token
-        when(e2ETrustTokenUtil.getE2ETrustToken()).thenReturn("mock-token");
-
-        TransferLimitExceededException exception = assertThrows(TransferLimitExceededException.class, () -> {
-            tradeLimitService.retrieveLimitations(requestHeaders);
-        });
-
-        assertTrue(exception.getMessage().contains("monthly"));
-    }
-
-    // Test retrieveLimitations - Yearly Amount Exceeded
-    @Test
-    void testRetrieveLimitations_YearlyAmountExceeded() {
-        // Setup config
-        when(customerLimitConfig.getDailyAmount()).thenReturn(new BigDecimal("10000"));
-        when(customerLimitConfig.getMonthlyAmount()).thenReturn(new BigDecimal("50000"));
-        when(customerLimitConfig.getYearlyAmount()).thenReturn(new BigDecimal("50000"));
-        when(customerLimitConfig.getMonthlyCount()).thenReturn(10);
-
-        // Mock limit enquiry response
-        LimitEnquiryResponse limitEnquiryResponse = createMockLimitEnquiryResponse();
-        when(restClientService.get(anyString(), anyMap(), eq(LimitEnquiryResponse.class), anyInt(), anyBoolean()))
-                .thenReturn(limitEnquiryResponse);
-
-        // Mock transfer amount response with exceeded yearly amount
-        RetrieveTransferAmountResponse transferAmountResponse = createMockTransferAmountResponseExceededYearlyAmount();
-        when(restClientService.get(eq(tradeLimitService.srbpOnlineUrl + "/trade-amount"), anyMap(), eq(RetrieveTransferAmountResponse.class), anyInt(), anyBoolean()))
-                .thenReturn(transferAmountResponse);
-
-        // Mock E2E token
-        when(e2ETrustTokenUtil.getE2ETrustToken()).thenReturn("mock-token");
-
-        TransferLimitExceededException exception = assertThrows(TransferLimitExceededException.class, () -> {
-            tradeLimitService.retrieveLimitations(requestHeaders);
-        });
-
-        assertTrue(exception.getMessage().contains("yearly"));
-    }
-
-    // Test retrieveLimitations - CLC Service Error
-    @Test
-    void testRetrieveLimitations_CLCServiceError() {
-        // Setup config
-        when(customerLimitConfig.getDailyAmount()).thenReturn(new BigDecimal("10000"));
-        when(customerLimitConfig.getMonthlyAmount()).thenReturn(new BigDecimal("50000"));
-        when(customerLimitConfig.getYearlyAmount()).thenReturn(new BigDecimal("500000"));
-        when(customerLimitConfig.getMonthlyCount()).thenReturn(10);
-
-        // Mock service error
-        when(restClientService.get(anyString(), anyMap(), eq(LimitEnquiryResponse.class), anyInt(), anyBoolean()))
-                .thenThrow(new RuntimeException("Service error"));
-
-        InternalServerErrorException exception = assertThrows(InternalServerErrorException.class, () -> {
-            tradeLimitService.retrieveLimitations(requestHeaders);
-        });
-
-        assertEquals(ExceptionMessageEnum.CLC_UNEXPECTED_ERROR.getCode(), exception.getMessage());
-    }
-
-    // Test retrieveLimitations - SRBP Service Error
-    @Test
-    void testRetrieveLimitations_SRBPServicError() throws Exception {
-        // Setup config
-        when(customerLimitConfig.getDailyAmount()).thenReturn(new BigDecimal("10000"));
-        when(customerLimitConfig.getMonthlyAmount()).thenReturn(new BigDecimal("50000"));
-        when(customerLimitConfig.getYearlyAmount()).thenReturn(new BigDecimal("500000"));
-        when(customerLimitConfig.getMonthlyCount()).thenReturn(10);
-
-        // Mock limit enquiry response
-        LimitEnquiryResponse limitEnquiryResponse = createMockLimitEnquiryResponse();
-        when(restClientService.get(anyString(), anyMap(), eq(LimitEnquiryResponse.class), anyInt(), anyBoolean()))
-                .thenReturn(limitEnquiryResponse);
-
-        // Mock SRBP service error
-        when(restClientService.get(eq(tradeLimitService.srbpOnlineUrl + "/trade-amount"), anyMap(), eq(RetrieveTransferAmountResponse.class), anyInt(), anyBoolean()))
-                .thenThrow(new RuntimeException("SRBP Service error"));
-
-        InternalServerErrorException exception = assertThrows(InternalServerErrorException.class, () -> {
-            tradeLimitService.retrieveLimitations(requestHeaders);
-        });
-
-        assertEquals(ErrorCodes.UNEXPECTED_RESULT_SRBP_ONLINE_ERROR.getValue(), exception.getMessage());
-    }
-
-    // Test retrieveLimitations - No P2PS Detail
-    @Test
-    void testRetrieveLimitations_NoP2PSDetail() {
-        // Setup config
-        when(customerLimitConfig.getDailyAmount()).thenReturn(new BigDecimal("10000"));
-        when(customerLimitConfig.getMonthlyAmount()).thenReturn(new BigDecimal("50000"));
-        when(customerLimitConfig.getYearlyAmount()).thenReturn(new BigDecimal("500000"));
-        when(customerLimitConfig.getMonthlyCount()).thenReturn(10);
-
-        // Mock limit enquiry response with no P2PS detail
-        LimitEnquiryResponse limitEnquiryResponse = createMockLimitEnquiryResponseNoP2PS();
-        when(restClientService.get(anyString(), anyMap(), eq(LimitEnquiryResponse.class), anyInt(), anyBoolean()))
-                .thenReturn(limitEnquiryResponse);
-
-        // Mock transfer amount response
-        RetrieveTransferAmountResponse transferAmountResponse = createMockTransferAmountResponse();
-        when(restClientService.get(eq(tradeLimitService.srbpOnlineUrl + "/trade-amount"), anyMap(), eq(RetrieveTransferAmountResponse.class), anyInt(), anyBoolean()))
-                .thenReturn(transferAmountResponse);
-
-        // Mock E2E token
-        when(e2ETrustTokenUtil.getE2ETrustToken()).thenReturn("mock-token");
-
-        RetrieveTransferLimitResponse response = tradeLimitService.retrieveLimitations(requestHeaders);
-
-        assertNotNull(response);
-        assertNotNull(response.getData());
-        assertEquals(BigDecimal.ZERO, response.getData().getAvailableTodayAmount());
-    }
-
-    // Test retrieveLimitations - Null Transaction Details
-    @Test
-    void testRetrieveLimitations_NullTransactionDetails() {
-        // Setup config
-        when(customerLimitConfig.getDailyAmount()).thenReturn(new BigDecimal("10000"));
-        when(customerLimitConfig.getMonthlyAmount()).thenReturn(new BigDecimal("50000"));
-        when(customerLimitConfig.getYearlyAmount()).thenReturn(new BigDecimal("500000"));
-        when(customerLimitConfig.getMonthlyCount()).thenReturn(10);
-
-        // Mock limit enquiry response with null details
-        LimitEnquiryResponse limitEnquiryResponse = createMockLimitEnquiryResponseNullDetails();
-        when(restClientService.get(anyString(), anyMap(), eq(LimitEnquiryResponse.class), anyInt(), anyBoolean()))
-                .thenReturn(limitEnquiryResponse);
-
-        // Mock transfer amount response
-        RetrieveTransferAmountResponse transferAmountResponse = createMockTransferAmountResponse();
-        when(restClientService.get(eq(tradeLimitService.srbpOnlineUrl + "/trade-amount"), anyMap(), eq(RetrieveTransferAmountResponse.class), anyInt(), anyBoolean()))
-                .thenReturn(transferAmountResponse);
-
-        // Mock E2E token
-        when(e2ETrustTokenUtil.getE2ETrustToken()).thenReturn("mock-token");
-
-        RetrieveTransferLimitResponse response = tradeLimitService.retrieveLimitations(requestHeaders);
-
-        assertNotNull(response);
-        assertNotNull(response.getData());
-        assertEquals(BigDecimal.ZERO, response.getData().getAvailableTodayAmount());
-    }
-
-    // Test retrieveTransferAmount method
-    @Test
-    void testRetrieveTransferAmount() throws Exception {
-        RetrieveTransferAmountResponse mockResponse = new RetrieveTransferAmountResponse();
-        when(restClientService.get(eq(tradeLimitService.srbpOnlineUrl + "/trade-amount"), anyMap(), eq(RetrieveTransferAmountResponse.class), anyInt(), anyBoolean()))
-                .thenReturn(mockResponse);
-
-        RetrieveTransferAmountResponse result = tradeLimitService.retrieveTransferAmount(requestHeaders);
-
-        assertEquals(mockResponse, result);
-    }
-
-    // Test retrieveTransferAmount - Error
-    @Test
-    void testRetrieveTransferAmount_Error() {
-        when(restClientService.get(eq(tradeLimitService.srbpOnlineUrl + "/trade-amount"), anyMap(), eq(RetrieveTransferAmountResponse.class), anyInt(), anyBoolean()))
-                .thenThrow(new RuntimeException());
-
-        InternalServerErrorException exception = assertThrows(InternalServerErrorException.class, () -> {
-            tradeLimitService.retrieveTransferAmount(requestHeaders);
-        });
-
-        assertEquals(ErrorCodes.UNEXPECTED_RESULT_SRBP_ONLINE_ERROR.getValue(), exception.getMessage());
-    }
-
-    // Test getValueDate method
-    @Test
-    void testGetValueDate() {
-        String expectedValue = LocalDate.now().format(java.time.format.DateTimeFormatter.ofPattern("yyyy-MM-dd"));
-        String actualValue = tradeLimitService.getValueDate();
-
-        assertEquals(expectedValue, actualValue);
-    }
-
-    // Test buildBaseHeaders method
-    @Test
-    void testBuildBaseHeaders() {
-        requestHeaders.put(HTTPRequestHeaderConstants.X_HSBC_Saml, "saml-value");
-        requestHeaders.put(HTTPRequestHeaderConstants.X_HSBC_Saml3, "saml3-value");
-        requestHeaders.put("custom-header", "custom-value");
-
-        when(e2ETrustTokenUtil.getE2ETrustToken()).thenReturn("mock-token");
-
-        Map<String, String> result = tradeLimitService.buildBaseHeaders(requestHeaders);
-
-        // Verify E2E token is added
-        assertEquals("mock-token", result.get(HTTPRequestHeaderConstants.X_HSBC_E2E_Trust_Token));
-        // Verify source system ID is added
-        assertEquals("mock-source-system-id", result.get(HTTPRequestHeaderConstants.X_HSBC_Source_System_Id));
-        // Verify X_HSBC_Request_Correlation_Id is added with UUID
-        assertNotNull(result.get(HTTPRequestHeaderConstants.X_HSBC_Request_Correlation_Id));
-        // Verify SAM and SAM3 are removed
-        assertFalse(result.containsKey(HTTPRequestHeaderConstants.X_HSBC_Saml));
-        assertFalse(result.containsKey(HTTPRequestHeaderConstants.X_HSBC_Saml3));
-        // Verify custom header is preserved
-        assertEquals("custom-value", result.get("custom-header"));
-    }
-
-    // Test buildSensitiveHeaders method
-    @Test
-    void testBuildSensitiveHeaders() {
-        Map<String, String> baseHeaders = new HashMap<>();
-        baseHeaders.put("header1", "value1");
-        
-        String sensitiveData = "[{\"key\":\"test-key\",\"value\":\"test-value\"}]";
-        when(JacksonUtil.convertObjectToJsonString(any())).thenReturn(sensitiveData);
-
-        Map<String, String> result = tradeLimitService.buildSensitiveHeaders(baseHeaders, "test-key", "test-value");
-
-        assertEquals("value1", result.get("header1"));
-        assertEquals(sensitiveData, result.get(HTTPRequestHeaderConstants.X_HSBC_Sensitive_Data));
-    }
-
-    // Test createEnquiryParams method (indirectly tested through retrieveLimitations)
-    @Test
-    void testCreateEnquiryParams() {
-        // This is tested as part of retrieveLimitations flow
-        // We can verify the params are created by checking the URI building
-        String expectedValueDate = LocalDate.now().format(java.time.format.DateTimeFormatter.ofPattern("yyyy-MM-dd"));
-        
-        // Set the config values that would be used in createEnquiryParams
-        tradeLimitService.bankNumber = "123";
-        tradeLimitService.channelIndicator = "CHANNEL";
-        tradeLimitService.enquiryChannel = "ENQUIRY";
-        tradeLimitService.customerIdType = "TYPE";
-        tradeLimitService.limitType = "LIMIT";
-        tradeLimitService.sequentIndicator = "SEQUENT";
-        tradeLimitService.contactEnquiryUrl = "http://example.com";
-        
-        // We'll verify the URI building functionality
-        ContactEnquiryParams params = new ContactEnquiryParams.Builder()
-                .bankNumber("123")
-                .customerId("test-customer-id")
-                .customerIdType("TYPE")
-                .channelIndicator("CHANNEL")
-                .enquiryChannel("ENQUIRY")
-                .valueDate(expectedValueDate)
-                .limitType("LIMIT")
-                .sequentIndicator("SEQUENT")
-                .build();
-        
-        // Verify the params creation through URI building
-        URI uri = tradeLimitService.buildContactEnquiryUri(params);
-        assertTrue(uri.toString().contains("bankNumber=123"));
-        assertTrue(uri.toString().contains("customerId=test-customer-id"));
-        assertTrue(uri.toString().contains("valueDate=" + expectedValueDate));
-    }
-
-    // Test extractTransactionDetails method
-    @Test
-    void testExtractTransactionDetails() {
-        LimitEnquiryResponse response = createMockLimitEnquiryResponse();
-        // This method is tested as part of the main flow
-        // The functionality is verified through retrieveLimitations tests
-    }
-
-    // Test findP2PSLimitDetail method
-    @Test
-    void testFindP2PSLimitDetail() {
-        List<TransactionLimitDetailList> details = new ArrayList<>();
-        TransactionLimitDetailList otherDetail = new TransactionLimitDetailList();
-        otherDetail.setLimitType("OTHER");
-        details.add(otherDetail);
-        
-        TransactionLimitDetailList p2psDetail = new TransactionLimitDetailList();
-        p2psDetail.setLimitType("P2PS");
-        details.add(p2psDetail);
-        
-        TransactionLimitDetailList result = tradeLimitService.findP2PSLimitDetail(details);
-        assertEquals("P2PS", result.getLimitType());
-    }
-
-    // Test findP2PSLimitDetail - No P2PS
-    @Test
-    void testFindP2PSLimitDetail_NoP2PS() {
-        List<TransactionLimitDetailList> details = new ArrayList<>();
-        TransactionLimitDetailList otherDetail = new TransactionLimitDetailList();
-        otherDetail.setLimitType("OTHER");
-        details.add(otherDetail);
-        
-        TransactionLimitDetailList result = tradeLimitService.findP2PSLimitDetail(details);
-        assertNull(result);
-    }
-
-    // Test extractUtilizedAmount method
-    @Test
-    void testExtractUtilizedAmount() {
-        TransactionLimitDetailList detail = new TransactionLimitDetailList();
-        // This would be tested as part of the main flow
-    }
-
-    // Helper methods to create mock objects
-    private LimitEnquiryResponse createMockLimitEnquiryResponse() {
-        // Create a mock response object with P2PS detail
-        LimitEnquiryResponse response = new LimitEnquiryResponse();
-        // Use reflection or setters to populate the nested object structure
-        // For brevity, we're not implementing the full object creation here
-        // but in a real test, you would create the full object structure
-        return response;
-    }
-
-    private LimitEnquiryResponse createMockLimitEnquiryResponseExceededDaily() {
-        // Create a mock response with exceeded daily limit
-        return createMockLimitEnquiryResponse();
-    }
-
-    private LimitEnquiryResponse createMockLimitEnquiryResponseNoP2PS() {
-        // Create a mock response with no P2PS detail
-        return createMockLimitEnquiryResponse();
-    }
-
-    private LimitEnquiryResponse createMockLimitEnquiryResponseNullDetails() {
-        // Create a mock response with null details
-        return createMockLimitEnquiryResponse();
-    }
-
-    private RetrieveTransferAmountResponse createMockTransferAmountResponse() {
-        // Create a mock transfer amount response
-        RetrieveTransferAmountResponse response = new RetrieveTransferAmountResponse();
-        // Set up the data as needed
-        return response;
-    }
-
-    private RetrieveTransferAmountResponse createMockTransferAmountResponseExceededMonthlyCount() {
-        // Create a mock response with exceeded monthly count
-        return createMockTransferAmountResponse();
-    }
-
-    private RetrieveTransferAmountResponse createMockTransferAmountResponseExceededMonthlyAmount() {
-        // Create a mock response with exceeded monthly amount
-        return createMockTransferAmountResponse();
-    }
-
-    private RetrieveTransferAmountResponse createMockTransferAmountResponseExceededYearlyAmount() {
-        // Create a mock response with exceeded yearly amount
-        return createMockTransferAmountResponse();
+@BeforeEach
+void setUp() {
+    MockitoAnnotations.openMocks(this);
+
+    // 初始化请求头
+    requestHeader.put(HTTPRequestHeaderConstants.X_HSBC_CUSTOMER_ID, "CIN12345");
+
+    // ==================== 模拟 application-hk-hsbc-local.yml 中的配置 ====================
+
+    // 1. 模拟 TradeTransferServiceImpl 中的 @Value 字段（来自 yml）
+    // 注意：这些字段在类中是 private，但你可以在测试类中通过反射设置，或直接修改父类字段（如果继承的字段是 protected）
+
+    // 由于你没有提供 TradeTransferServiceImpl 的完整源码，我们假设：
+    // - 它继承了 AbstractRestService（包含 tradeOnlineUrl）
+    // - 它有私有字段如 contactEnquiryUrl、srbpOnlineUrl 等，但你没有暴露 setter
+
+    // ✅ 最稳妥方式：通过反射设置 private 字段（推荐）
+    setPrivateField(tradeTransferService, "tradeOnlineUrl", "https://srbp-aag-uat-wealth-platform-amh-dev.ikp1001snp.cloud.hk.hsbc/api/srbp-online/v3");
+    setPrivateField(tradeTransferService, "contactEnquiryUrl", "https://digitaldev-int-rbwm.hk.hsbc/cb-obs-hk/cb-hk-hbap-obs-shrd-clc-tran-lmt-enq-wpb-sct-internal-proxy/v2/tran-lmt-enq");
+    setPrivateField(tradeTransferService, "srbpOnlineUrl", "https://srbp-aag-uat-wealth-platform-amh-dev.ikp1001snp.cloud.hk.hsbc/api/srbp-online/v3");
+
+    // 2. 模拟 CustomerLimitConfig 的值（来自 yml 的 clc 参数）
+    when(tradeLimitService.retrieveLimitations(anyMap()))
+            .thenReturn(createDefaultRetrieveTransferLimitResponse());
+
+    // 3. 模拟 CEP、MDS、SRE 等 URL（这些是通过 restClientService 调用的，你已经 mock 了）
+    // 但你可能在 buildRequestHeaders 或其他方法中用到了这些值，所以也要设置
+    setPrivateField(tradeTransferService, "customerAccountUrl", "https://srbp-cag-core.uat.wealth-platform-amh.ape1.dev.aws.cloud.hsbc/api/equities/accounts/%s");
+    setPrivateField(tradeTransferService, "accountsMapUrl", "https://srbp-cag-core.uat.wealth-platform-amh.ape1.dev.aws.cloud.hsbc/api/equities/accounts/");
+    setPrivateField(tradeTransferService, "sreUrl", "https://srbp-cag-core.uat.wealth-platform-amh.ape1.dev.aws.cloud.hsbc/api/equities/rule-engine/api/v2/rules");
+    setPrivateField(tradeTransferService, "cepPartyNameUrl", "https://digitaldev-int-rbwm.hk.hsbc/gdt-mds-cep-260-cus-profile-qry-hk-hbap-cert-internal-proxy/v1/party/CIN-SensitiveHeadersKey/name");
+    setPrivateField(tradeTransferService, "cepPartyContactUrl", "https://digitaldev-int-rbwm.hk.hsbc/gdt-mds-cep-260-cus-profile-qry-hk-hbap-cert-internal-proxy/v1/party/CIN-SensitiveHeadersKey/contact");
+    setPrivateField(tradeTransferService, "mdsGoldQuotesEndpoint", "https://cag.uat.wealth-platform-amh.ape1.dev.aws.cloud.hsbc/mdl/gold/{productAlternativeIdentifier}/quotes");
+
+    // 4. 模拟 clc.header.*（这些可能用于 buildBaseHeaders）
+    setPrivateField(tradeTransferService, "gbgf", "WPB");
+    setPrivateField(tradeTransferService, "sourceSystemId", "10898670");
+    setPrivateField(tradeTransferService, "clientIp", "127.0.0.1");
+    setPrivateField(tradeTransferService, "clientId", "d9ccc780ed7042f997cb53696f7d4d59");
+    setPrivateField(tradeTransferService, "clientSecret", ""); // 空字符串
+    setPrivateField(tradeTransferService, "targetSystemEnvironmentId", "O63");
+    setPrivateField(tradeTransferService, "sessionCorrelationId", "0");
+
+    // 5. 模拟 clc.params.*
+    setPrivateField(tradeTransferService, "bankNumber", "004");
+    setPrivateField(tradeTransferService, "channelIndicator", "N");
+    setPrivateField(tradeTransferService, "enquiryChannel", "N");
+    setPrivateField(tradeTransferService, "customerId", "SensitiveHeadersKey");
+    setPrivateField(tradeTransferService, "customerIdType", "N");
+    setPrivateField(tradeTransferService, "limitType", "P2PS");
+    setPrivateField(tradeTransferService, "sequentIndicator", "Y");
+
+    // 6. 模拟 AbstractRestService 的字段（避免 NPE）
+    tradeTransferService.timeout = 5000;
+    tradeTransferService.printMessageLog = false;
+
+    // 7. 模拟 E2E Token
+    when(e2ETrustTokenUtil.getE2ETrustToken()).thenReturn("mock-e2e-token");
+
+    // 8. 模拟 SRE 验证
+    when(sreValidationService.callSreForTransferValidation(anyString(), anyString(), anyString(), anyMap()))
+            .thenReturn(new RuleResponse());
+    when(sreValidationService.handleSreValidateResponse(any(RuleResponse.class)))
+            .thenReturn(true);
+
+    // 9. 模拟外部服务响应（你原来的 mock 保持不变）
+    when(restClientService.get(anyString(), anyMap(), eq(GoldPriceResponse.class), anyInt(), anyBoolean()))
+            .thenReturn(createGoldPriceResponse());
+    when(restClientService.get(anyString(), anyMap(), eq(PartyNameResponse.class), anyInt(), anyBoolean()))
+            .thenReturn(createPartyNameResponse());
+    when(restClientService.get(anyString(), anyMap(), eq(PartyContactResponse.class), anyInt(), anyBoolean()))
+            .thenReturn(createPartyContactResponse());
+    when(restClientService.get(anyString(), anyMap(), eq(CustomerAccounts.class), anyInt(), anyBoolean()))
+            .thenReturn(createCustomerAccounts());
+    when(restClientService.get(anyString(), anyMap(), eq(RetrieveTransferListResponse.class), anyInt(), anyBoolean()))
+            .thenReturn(createRetrieveTransferListResponse());
+    when(restClientService.get(anyString(), anyMap(), eq(RetrieveTransferDetailResponse.class), anyInt(), anyBoolean()))
+            .thenReturn(createRetrieveTransferDetailResponse());
+    when(restClientService.post(anyString(), anyMap(), any(CreateTransferRequest.class), eq(CreateTransferResponse.class), anyInt(), anyBoolean()))
+            .thenReturn(createCreateTransferResponse());
+    when(restClientService.put(anyString(), anyMap(), any(UpdateTransferRequest.class), eq(UpdateTransferResponse.class), anyInt(), anyBoolean()))
+            .thenReturn(createUpdateTransferResponse());
+    when(restClientService.get(anyString(), anyMap(), eq(AccountId.class), anyInt(), anyBoolean()))
+            .thenReturn(createAccountId());
+    when(duplicateSubmitPreventionService.generateUniqueKey()).thenReturn("unique-key-123");
+}
+
+// ✅ 工具方法：通过反射设置 private 字段
+private void setPrivateField(Object target, String fieldName, Object value) {
+    try {
+        Field field = target.getClass().getDeclaredField(fieldName);
+        field.setAccessible(true);
+        field.set(target, value);
+    } catch (NoSuchFieldException | IllegalAccessException e) {
+        throw new RuntimeException("Failed to set field: " + fieldName, e);
     }
 }
