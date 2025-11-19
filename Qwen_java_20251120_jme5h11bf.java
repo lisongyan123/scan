@@ -1,32 +1,49 @@
 package com.hsbc.trade.transfer.service.impl;
 
 import com.hsbc.trade.ErrorCodes;
-import com.hsbc.trade.constant.HTTPRequestHeaderConstants;
-import com.hsbc.trade.transfer.config.CustomerLimitConfig;
-import com.hsbc.trade.transfer.domain.limit.ContactEnquiryParams;
-import com.hsbc.trade.transfer.domain.limit.LimitEnquiryResponse;
-import com.hsbc.trade.transfer.domain.limit.TransactionLimitDetailList;
-import com.hsbc.trade.transfer.exception.TransferLimitExceededException;
-import com.hsbc.trade.transfer.retrievetransferamount.RetrieveTransferAmountResponse;
-import com.hsbc.trade.transfer.retrievetransferlimit.RetrieveTransferLimitResponse;
-import com.hsbc.trade.transfer.retrievetransferlimit.RetrieveTransferLimitResponseData;
-import com.hsbc.trade.utils.E2ETrustTokenUtil;
+import com.hsbc.trade.HTTPRequestHeaderConstants;
+import com.hsbc.trade.common.AccountId;
+import com.hsbc.trade.service.DuplicateSubmitPreventionService;
 import com.hsbc.trade.service.RestClientService;
-import com.hsbc.trade.utils.JacksonUtil;
+import com.hsbc.trade.transfer.common.TransferSideCode;
+import com.hsbc.trade.transfer.constant.TransferQueryParameterConstant;
+import com.hsbc.trade.transfer.createtransfer.ActionRequestCode;
+import com.hsbc.trade.transfer.createtransfer.CreateTransferRequest;
+import com.hsbc.trade.transfer.createtransfer.CreateTransferResponse;
+import com.hsbc.trade.transfer.createtransfer.ReceiverInfo;
+import com.hsbc.trade.transfer.createtransfer.TransferOrderInfo;
+import com.hsbc.trade.transfer.domain.account.CustomerAccounts;
+import com.hsbc.trade.transfer.domain.account.InvestmentAccount;
+import com.hsbc.trade.transfer.domain.cep.PartyContactResponse;
+import com.hsbc.trade.transfer.domain.cep.PartyNameResponse;
+import com.hsbc.trade.transfer.domain.eligibility.RuleResponse;
+import com.hsbc.trade.transfer.domain.mds.GoldPriceResponse;
+import com.hsbc.trade.transfer.domain.mds.GoldPriceResponseData;
+import com.hsbc.trade.transfer.exception.TransferLimitExceededException;
+import com.hsbc.trade.transfer.retrievetransferdetail.RetrieveTransferDetailResponse;
+import com.hsbc.trade.transfer.retrievetransferdetail.RetrieveTransferDetailResponseData;
+import com.hsbc.trade.transfer.retrievetransferlist.RetrieveTransferListResponse;
+import com.hsbc.trade.transfer.retrievetransferlist.RetrieveTransferListResponseData;
+import com.hsbc.trade.transfer.retrievetransferlist.TransferListItemInfo;
+import com.hsbc.trade.transfer.service.AbstractRestService;
+import com.hsbc.trade.transfer.service.TradeTransferService;
+import com.hsbc.trade.transfer.updatetransfer.TransferActionCode;
+import com.hsbc.trade.transfer.updatetransfer.UpdateTransferRequest;
+import com.hsbc.trade.transfer.updatetransfer.UpdateTransferResponse;
+import com.hsbc.trade.transfer.utils.ResponseInfoHandler;
+import com.hsbc.trade.utils.E2ETrustTokenUtil;
+import jakarta.ws.rs.BadRequestException;
 import jakarta.ws.rs.InternalServerErrorException;
+import org.apache.commons.lang3.StringUtils;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.mockito.InjectMocks;
 import org.mockito.Mock;
 import org.mockito.MockitoAnnotations;
-import org.springframework.http.HttpStatus;
 import org.springframework.web.client.HttpClientErrorException;
 
 import java.math.BigDecimal;
 import java.net.URI;
-import java.time.LocalDate;
-import java.time.ZonedDateTime;
-import java.time.format.DateTimeFormatter;
 import java.util.*;
 import java.util.stream.Collectors;
 
@@ -34,7 +51,7 @@ import static org.junit.jupiter.api.Assertions.*;
 import static org.mockito.ArgumentMatchers.*;
 import static org.mockito.Mockito.*;
 
-class TradeLimitServiceImplTest {
+class TradeTransferServiceImplTest {
 
     @Mock
     private RestClientService restClientService;
@@ -43,10 +60,16 @@ class TradeLimitServiceImplTest {
     private E2ETrustTokenUtil e2ETrustTokenUtil;
 
     @Mock
-    private CustomerLimitConfig customerLimitConfig;
+    private DuplicateSubmitPreventionService duplicateSubmitPreventionService;
+
+    @Mock
+    private TradeLimitServiceImpl tradeLimitService;
+
+    @Mock
+    private SreValidationServiceImpl sreValidationService;
 
     @InjectMocks
-    private TradeLimitServiceImpl tradeLimitService;
+    private TradeTransferServiceImpl tradeTransferService;
 
     private final Map<String, String> requestHeader = new HashMap<>();
 
@@ -55,432 +78,622 @@ class TradeLimitServiceImplTest {
         MockitoAnnotations.openMocks(this);
 
         // 初始化请求头
-        requestHeader.put(HTTPRequestHeaderConstants.X_HSBC_Customer_Id, "CUST123");
+        requestHeader.put(HTTPRequestHeaderConstants.X_HSBC_CUSTOMER_ID, "CIN12345");
 
-        // Mock 配置值
-        when(customerLimitConfig.getDailyAmount()).thenReturn(new BigDecimal("10000.00"));
-        when(customerLimitConfig.getMonthlyAmount()).thenReturn(new BigDecimal("50000.00"));
-        when(customerLimitConfig.getMonthlyCount()).thenReturn(5);
-        when(customerLimitConfig.getYearlyAmount()).thenReturn(new BigDecimal("200000.00"));
+        // Mock 基础配置
+        when(tradeLimitService.retrieveLimitations(any())).thenCallRealMethod();
+        when(tradeLimitService.retrieveLimitations(anyMap()))
+                .thenReturn(createDefaultLimitResponse());
 
-        // Mock E2E Trust Token
+        // Mock E2E Token
         when(e2ETrustTokenUtil.getE2ETrustToken()).thenReturn("mock-e2e-token");
 
-        // Mock URL 配置（实际测试中不调用真实服务）
-        when(restClientService.get(anyString(), anyMap(), eq(LimitEnquiryResponse.class), anyInt(), anyBoolean()))
-                .thenAnswer(invocation -> {
-                    String url = invocation.getArgument(0);
-                    Map<String, String> headers = invocation.getArgument(1);
-                    // 可选：验证 headers 是否包含正确 token
-                    assertEquals("mock-e2e-token", headers.get(HTTPRequestHeaderConstants.X_HSBC_E2E_Trust_Token));
-                    return new LimitEnquiryResponse(); // 默认空响应
-                });
+        // Mock SRE 验证成功
+        when(sreValidationService.callSreForTransferValidation(anyString(), anyString(), anyString(), anyMap()))
+                .thenReturn(new RuleResponse());
+        when(sreValidationService.handleSreValidateResponse(any(RuleResponse.class)))
+                .thenReturn(true);
 
-        when(restClientService.get(anyString(), anyMap(), eq(RetrieveTransferAmountResponse.class), anyInt(), anyBoolean()))
-                .thenReturn(createDefaultTransferAmountResponse());
+        // Mock 金价响应
+        when(restClientService.get(anyString(), anyMap(), eq(GoldPriceResponse.class), anyInt(), anyBoolean()))
+                .thenReturn(createGoldPriceResponse());
+
+        // Mock 客户姓名响应
+        when(restClientService.get(anyString(), anyMap(), eq(PartyNameResponse.class), anyInt(), anyBoolean()))
+                .thenReturn(createPartyNameResponse());
+
+        // Mock 客户联系方式响应
+        when(restClientService.get(anyString(), anyMap(), eq(PartyContactResponse.class), anyInt(), anyBoolean()))
+                .thenReturn(createPartyContactResponse());
+
+        // Mock 账户列表响应
+        when(restClientService.get(anyString(), anyMap(), eq(CustomerAccounts.class), anyInt(), anyBoolean()))
+                .thenReturn(createCustomerAccounts());
+
+        // Mock 转账列表响应
+        when(restClientService.get(anyString(), anyMap(), eq(RetrieveTransferListResponse.class), anyInt(), anyBoolean()))
+                .thenReturn(createRetrieveTransferListResponse());
+
+        // Mock 转账详情响应
+        when(restClientService.get(anyString(), anyMap(), eq(RetrieveTransferDetailResponse.class), anyInt(), anyBoolean()))
+                .thenReturn(createRetrieveTransferDetailResponse());
+
+        // Mock 创建转账响应
+        when(restClientService.post(anyString(), anyMap(), any(CreateTransferRequest.class), eq(CreateTransferResponse.class), anyInt(), anyBoolean()))
+                .thenReturn(createCreateTransferResponse());
+
+        // Mock 修改转账响应
+        when(restClientService.put(anyString(), anyMap(), any(UpdateTransferRequest.class), eq(UpdateTransferResponse.class), anyInt(), anyBoolean()))
+                .thenReturn(createUpdateTransferResponse());
+
+        // Mock 唯一键生成
+        when(duplicateSubmitPreventionService.generateUniqueKey()).thenReturn("unique-key-123");
+
+        // Mock 账户ID查找
+        when(restClientService.get(anyString(), anyMap(), eq(AccountId.class), anyInt(), anyBoolean()))
+                .thenReturn(createAccountId());
     }
 
-    // ==================== 测试 retrieveLimitations ====================
+    // ==================== 测试 retrieveTransferList ====================
 
     @Test
-    void testRetrieveLimitations_Success() {
-        // Arrange
-        LimitEnquiryResponse limitResponse = createLimitEnquiryResponse("P2PS", 2000, 10000); // 已用2000，上限10000
-        RetrieveTransferAmountResponse transferResponse = createDefaultTransferAmountResponse();
-
-        when(restClientService.get(anyString(), anyMap(), eq(LimitEnquiryResponse.class), anyInt(), anyBoolean()))
-                .thenReturn(limitResponse);
-        when(restClientService.get(anyString(), anyMap(), eq(RetrieveTransferAmountResponse.class), anyInt(), anyBoolean()))
-                .thenReturn(transferResponse);
-
+    void testRetrieveTransferList_Success() {
         // Act
-        RetrieveTransferLimitResponse response = tradeLimitService.retrieveLimitations(requestHeader);
+        RetrieveTransferListResponse response = tradeTransferService.retrieveTransferList(
+                requestHeader, "PENDING", Arrays.asList("chk1", "chk2"), "{}", "PROD1", "S1");
 
         // Assert
         assertNotNull(response);
         assertNotNull(response.getData());
-        RetrieveTransferLimitResponseData data = response.getData();
+        assertEquals(1, response.getData().getTransferLists().size());
+        assertEquals("MASKED*", response.getData().getTransferLists().get(0).getSenderCustomerFirstName());
+        assertEquals("MASKED*", response.getData().getTransferLists().get(0).getSenderCustomerMiddleName());
 
-        assertEquals(new BigDecimal("10000.00"), data.getMaxDailyLimitedAmount());
-        assertEquals(new BigDecimal("8000.00"), data.getAvailableTodayAmount()); // 10000 - 2000
-
-        assertEquals(new BigDecimal("50000.00"), data.getMaxMonthlyLimitedAmount());
-        assertEquals(new BigDecimal("40000.00"), data.getAvailableMonthToDateAmount()); // 50000 - 10000
-
-        assertEquals("5", data.getMaxMonthlyTransferCount());
-        assertEquals("4", data.getAvailableMonthlyTransferCount()); // 5 - 1
-
-        assertEquals(new BigDecimal("200000.00"), data.getMaxYearlyLimitedAmount());
-        assertEquals(new BigDecimal("150000.00"), data.getAvailableYearToDateAmount()); // 200000 - 50000
-
-        assertEquals(ZonedDateTime.now().format(DateTimeFormatter.ofPattern("yyyy-MM-dd'T'HH:mm:ss.SSSZ")),
-                data.getAsofDateTime());
-
-        verify(restClientService, times(1)).get(anyString(), anyMap(), eq(LimitEnquiryResponse.class), anyInt(), anyBoolean());
-        verify(restClientService, times(1)).get(anyString(), anyMap(), eq(RetrieveTransferAmountResponse.class), anyInt(), anyBoolean());
+        verify(restClientService, times(1)).get(anyString(), anyMap(), eq(CustomerAccounts.class), anyInt(), anyBoolean());
+        verify(restClientService, times(1)).get(anyString(), anyMap(), eq(PartyNameResponse.class), anyInt(), anyBoolean());
+        verify(restClientService, times(1)).get(anyString(), anyMap(), eq(PartyContactResponse.class), anyInt(), anyBoolean());
+        verify(restClientService, times(1)).get(anyString(), anyMap(), eq(RetrieveTransferListResponse.class), anyInt(), anyBoolean());
     }
 
     @Test
-    void testRetrieveLimitations_DailyLimitExceeded() {
-        // Arrange: 已用金额 > 最大金额
-        LimitEnquiryResponse limitResponse = createLimitEnquiryResponse("P2PS", 11000, 10000); // 超限
+    void testRetrieveTransferList_AccountListEmpty() {
+        // Arrange: 返回空账户列表
+        when(restClientService.get(anyString(), anyMap(), eq(CustomerAccounts.class), anyInt(), anyBoolean()))
+                .thenReturn(new CustomerAccounts());
 
-        when(restClientService.get(anyString(), anyMap(), eq(LimitEnquiryResponse.class), anyInt(), anyBoolean()))
-                .thenReturn(limitResponse);
+        // Act & Assert
+        RetrieveTransferListResponse response = tradeTransferService.retrieveTransferList(
+                requestHeader, "PENDING", null, "{}", null, null);
+
+        assertNotNull(response);
+        assertNull(response.getData().getTransferLists()); // 无异常，但无账户信息
+        verify(restClientService, times(1)).get(anyString(), anyMap(), eq(CustomerAccounts.class), anyInt(), anyBoolean());
+    }
+
+    // ==================== 测试 retrieveTransferDetail ====================
+
+    @Test
+    void testRetrieveTransferDetail_Success() {
+        // Act
+        RetrieveTransferDetailResponse response = tradeTransferService.retrieveTransferDetail(requestHeader, "REF123");
+
+        // Assert
+        assertNotNull(response);
+        assertNotNull(response.getData());
+        assertEquals("chk1", response.getData().getAccountChecksumIdentifier());
+        assertEquals("MASKED*", response.getData().getSenderCustomerFirstName());
+
+        verify(restClientService, times(1)).get(anyString(), anyMap(), eq(CustomerAccounts.class), anyInt(), anyBoolean());
+        verify(restClientService, times(1)).get(anyString(), anyMap(), eq(PartyNameResponse.class), anyInt(), anyBoolean());
+        verify(restClientService, times(1)).get(anyString(), anyMap(), eq(PartyContactResponse.class), anyInt(), anyBoolean());
+    }
+
+    @Test
+    void testRetrieveTransferDetail_AccountChecksumNotFound() {
+        // Arrange: 账户列表中无匹配 accountNumber
+        InvestmentAccount account = new InvestmentAccount();
+        account.setInvestmentAccountId(new AccountId().setAccountNumber("OTHER_ACCOUNT"));
+        CustomerAccounts accounts = new CustomerAccounts();
+        accounts.setInvestmentAccountList(Collections.singletonList(account));
+        when(restClientService.get(anyString(), anyMap(), eq(CustomerAccounts.class), anyInt(), anyBoolean()))
+                .thenReturn(accounts);
+
+        // Act & Assert
+        BadRequestException exception = assertThrows(
+                BadRequestException.class,
+                () -> tradeTransferService.retrieveTransferDetail(requestHeader, "REF123")
+        );
+
+        assertEquals("ACCOUNT_LIST_EMPTY_ERROR", exception.getMessage());
+        verify(restClientService, times(1)).get(anyString(), anyMap(), eq(CustomerAccounts.class), anyInt(), anyBoolean());
+    }
+
+    @Test
+    void testRetrieveTransferDetail_ResponseDataNull() {
+        // Arrange: 响应体为 null
+        RetrieveTransferDetailResponse response = new RetrieveTransferDetailResponse();
+        when(restClientService.get(anyString(), anyMap(), eq(RetrieveTransferDetailResponse.class), anyInt(), anyBoolean()))
+                .thenReturn(response);
+
+        // Act
+        RetrieveTransferDetailResponse result = tradeTransferService.retrieveTransferDetail(requestHeader, "REF123");
+
+        // Assert
+        assertNotNull(result);
+        assertNull(result.getData());
+        verify(restClientService, times(1)).get(anyString(), anyMap(), eq(RetrieveTransferDetailResponse.class), anyInt(), anyBoolean());
+    }
+
+    // ==================== 测试 createTransfers ====================
+
+    @Test
+    void testCreateTransfers_Success() {
+        // Arrange
+        CreateTransferRequest request = new CreateTransferRequest();
+        ReceiverInfo receiver = new ReceiverInfo();
+        receiver.setReceiverCustomerNumber("CIN999");
+        receiver.setTransferQuantity(new BigDecimal("100.00"));
+        request.getData().setReceiverLists(Collections.singletonList(receiver));
+        request.getData().setRequestPriceValue(new BigDecimal("50.00"));
+        request.getData().setActionRequestCode(ActionRequestCode.D);
+        request.getData().setSenderInvestmentAccountChecksumIdentifier("chk1");
+
+        // Act
+        CreateTransferResponse response = tradeTransferService.createTransfers(requestHeader, request);
+
+        // Assert
+        assertNotNull(response);
+        assertNotNull(response.getData());
+        assertEquals("unique-key-123", response.getData().getRequestUniqueKey());
+        assertEquals(new BigDecimal("1234.56"), response.getData().getTransferOrderLists().get(0).getRequestPriceValue());
+        assertEquals("HKD", response.getData().getTransferOrderLists().get(0).getPriceCurrencyCode());
+        assertEquals("Smith John A", response.getData().getSenderCustomerName());
+
+        verify(tradeLimitService, times(1)).retrieveLimitations(anyMap());
+        verify(sreValidationService, times(1)).callSreForTransferValidation(eq("dac_tokenized_gold_transfer_sender_rule"), anyString(), eq("CIN999"), anyMap());
+        verify(restClientService, times(1)).get(anyString(), anyMap(), eq(GoldPriceResponse.class), anyInt(), anyBoolean());
+        verify(restClientService, times(1)).post(anyString(), anyMap(), any(CreateTransferRequest.class), eq(CreateTransferResponse.class), anyInt(), anyBoolean());
+    }
+
+    @Test
+    void testCreateTransfers_DailyLimitExceeded() {
+        // Arrange: 限额超限
+        RetrieveTransferLimitResponse limitResponse = createLimitResponseWithAvailableAmount(BigDecimal.ZERO, BigDecimal.ZERO, BigDecimal.ZERO);
+        when(tradeLimitService.retrieveLimitations(anyMap())).thenReturn(limitResponse);
+
+        CreateTransferRequest request = new CreateTransferRequest();
+        ReceiverInfo receiver = new ReceiverInfo();
+        receiver.setTransferQuantity(new BigDecimal("100000.00")); // 超过限额
+        request.getData().setReceiverLists(Collections.singletonList(receiver));
+        request.getData().setRequestPriceValue(new BigDecimal("1000.00"));
+        request.getData().setSenderInvestmentAccountChecksumIdentifier("chk1");
 
         // Act & Assert
         TransferLimitExceededException exception = assertThrows(
                 TransferLimitExceededException.class,
-                () -> tradeLimitService.retrieveLimitations(requestHeader)
+                () -> tradeTransferService.createTransfers(requestHeader, request)
         );
 
         assertEquals("Daily limit exceeded: 10000.00", exception.getMessage());
     }
 
     @Test
-    void testRetrieveLimitations_DailyLimitZeroAvailable() {
-        // Arrange: 已用金额 = 最大金额
-        LimitEnquiryResponse limitResponse = createLimitEnquiryResponse("P2PS", 10000, 10000);
+    void testCreateTransfers_MonthlyLimitExceeded() {
+        // Arrange: 月限额超限
+        RetrieveTransferLimitResponse limitResponse = createLimitResponseWithAvailableAmount(
+                new BigDecimal("10000.00"), BigDecimal.ZERO, new BigDecimal("200000.00"));
+        when(tradeLimitService.retrieveLimitations(anyMap())).thenReturn(limitResponse);
 
-        when(restClientService.get(anyString(), anyMap(), eq(LimitEnquiryResponse.class), anyInt(), anyBoolean()))
-                .thenReturn(limitResponse);
-
-        // Act & Assert
-        TransferLimitExceededException exception = assertThrows(
-                TransferLimitExceededException.class,
-                () -> tradeLimitService.retrieveLimitations(requestHeader)
-        );
-
-        assertEquals("Daily limit exceeded: 10000.00", exception.getMessage());
-    }
-
-    @Test
-    void testRetrieveLimitations_MonthlyCountExceeded() {
-        // Arrange: 本月已用次数 = 最大次数
-        RetrieveTransferAmountResponse transferResponse = createTransferAmountResponse(
-                new BigDecimal("10000"), // monthlyUsed
-                new BigDecimal("50000"), // yearlyUsed
-                5 // usedMonthlyCount
-        );
-
-        when(restClientService.get(anyString(), anyMap(), eq(RetrieveTransferAmountResponse.class), anyInt(), anyBoolean()))
-                .thenReturn(transferResponse);
+        CreateTransferRequest request = new CreateTransferRequest();
+        ReceiverInfo receiver = new ReceiverInfo();
+        receiver.setTransferQuantity(new BigDecimal("500000.00")); // 超过月限额
+        request.getData().setReceiverLists(Collections.singletonList(receiver));
+        request.getData().setRequestPriceValue(new BigDecimal("1000.00"));
+        request.getData().setSenderInvestmentAccountChecksumIdentifier("chk1");
 
         // Act & Assert
         TransferLimitExceededException exception = assertThrows(
                 TransferLimitExceededException.class,
-                () -> tradeLimitService.retrieveLimitations(requestHeader)
-        );
-
-        assertEquals("Monthly transfer count exceeded: 5", exception.getMessage());
-    }
-
-    @Test
-    void testRetrieveLimitations_MonthlyAmountExceeded() {
-        // Arrange: 本月已用金额 = 月限额
-        RetrieveTransferAmountResponse transferResponse = createTransferAmountResponse(
-                new BigDecimal("50000"), // monthlyUsed
-                new BigDecimal("50000"), // yearlyUsed
-                1 // usedMonthlyCount
-        );
-
-        when(restClientService.get(anyString(), anyMap(), eq(RetrieveTransferAmountResponse.class), anyInt(), anyBoolean()))
-                .thenReturn(transferResponse);
-
-        // Act & Assert
-        TransferLimitExceededException exception = assertThrows(
-                TransferLimitExceededException.class,
-                () -> tradeLimitService.retrieveLimitations(requestHeader)
+                () -> tradeTransferService.createTransfers(requestHeader, request)
         );
 
         assertEquals("Monthly limit exceeded: 50000.00", exception.getMessage());
     }
 
     @Test
-    void testRetrieveLimitations_YearlyAmountExceeded() {
-        // Arrange: 年限额已用完
-        RetrieveTransferAmountResponse transferResponse = createTransferAmountResponse(
-                new BigDecimal("10000"), // monthlyUsed
-                new BigDecimal("200000"), // yearlyUsed
-                1 // usedMonthlyCount
-        );
+    void testCreateTransfers_YearlyLimitExceeded() {
+        // Arrange: 年限额超限
+        RetrieveTransferLimitResponse limitResponse = createLimitResponseWithAvailableAmount(
+                new BigDecimal("10000.00"), new BigDecimal("50000.00"), BigDecimal.ZERO);
+        when(tradeLimitService.retrieveLimitations(anyMap())).thenReturn(limitResponse);
 
-        when(restClientService.get(anyString(), anyMap(), eq(RetrieveTransferAmountResponse.class), anyInt(), anyBoolean()))
-                .thenReturn(transferResponse);
+        CreateTransferRequest request = new CreateTransferRequest();
+        ReceiverInfo receiver = new ReceiverInfo();
+        receiver.setTransferQuantity(new BigDecimal("2000000.00")); // 超过年限额
+        request.getData().setReceiverLists(Collections.singletonList(receiver));
+        request.getData().setRequestPriceValue(new BigDecimal("1000.00"));
+        request.getData().setSenderInvestmentAccountChecksumIdentifier("chk1");
 
         // Act & Assert
         TransferLimitExceededException exception = assertThrows(
                 TransferLimitExceededException.class,
-                () -> tradeLimitService.retrieveLimitations(requestHeader)
+                () -> tradeTransferService.createTransfers(requestHeader, request)
         );
 
         assertEquals("Yearly limit exceeded: 200000.00", exception.getMessage());
     }
 
     @Test
-    void testRetrieveLimitations_LimitEnquiryResponseNull() {
-        // Arrange: 服务返回 null
-        when(restClientService.get(anyString(), anyMap(), eq(LimitEnquiryResponse.class), anyInt(), anyBoolean()))
-                .thenReturn(null);
+    void testCreateTransfers_GoldPriceMissing_DOperation() {
+        // Arrange: D 操作但金价为空
+        when(restClientService.get(anyString(), anyMap(), eq(GoldPriceResponse.class), anyInt(), anyBoolean()))
+                .thenReturn(new GoldPriceResponse());
+
+        CreateTransferRequest request = new CreateTransferRequest();
+        ReceiverInfo receiver = new ReceiverInfo();
+        receiver.setTransferQuantity(new BigDecimal("100.00"));
+        request.getData().setReceiverLists(Collections.singletonList(receiver));
+        request.getData().setRequestPriceValue(new BigDecimal("50.00"));
+        request.getData().setActionRequestCode(ActionRequestCode.D);
+        request.getData().setSenderInvestmentAccountChecksumIdentifier("chk1");
 
         // Act
-        RetrieveTransferLimitResponse response = tradeLimitService.retrieveLimitations(requestHeader);
+        CreateTransferResponse response = tradeTransferService.createTransfers(requestHeader, request);
 
-        // Assert
+        // Assert: 未设置金价，但不报错
         assertNotNull(response);
-        assertEquals(BigDecimal.ZERO, response.getData().getAvailableTodayAmount());
+        assertNull(response.getData().getTransferOrderLists().get(0).getRequestPriceValue());
+        assertEquals("unique-key-123", response.getData().getRequestUniqueKey());
     }
 
     @Test
-    void testRetrieveLimitations_P2PSDetailNotFound() {
-        // Arrange: 返回的响应中没有 P2PS 类型的限额
-        LimitEnquiryResponse limitResponse = new LimitEnquiryResponse();
-        // 没有设置任何 TransactionLimitDetailList
+    void testCreateTransfers_SreValidationFailed() {
+        // Arrange: SRE 验证抛异常
+        when(sreValidationService.callSreForTransferValidation(anyString(), anyString(), anyString(), anyMap()))
+                .thenThrow(new RuntimeException("SRE service down"));
 
-        when(restClientService.get(anyString(), anyMap(), eq(LimitEnquiryResponse.class), anyInt(), anyBoolean()))
-                .thenReturn(limitResponse);
-
-        // Act
-        RetrieveTransferLimitResponse response = tradeLimitService.retrieveLimitations(requestHeader);
-
-        // Assert
-        assertNotNull(response);
-        assertEquals(BigDecimal.ZERO, response.getData().getAvailableTodayAmount());
-    }
-
-    @Test
-    void testRetrieveLimitations_RetrieveTransferAmountException() {
-        // Arrange: 调用 SRBP 失败
-        when(restClientService.get(anyString(), anyMap(), eq(RetrieveTransferAmountResponse.class), anyInt(), anyBoolean()))
-                .thenThrow(new RuntimeException("SRBP service down"));
+        CreateTransferRequest request = new CreateTransferRequest();
+        ReceiverInfo receiver = new ReceiverInfo();
+        receiver.setReceiverCustomerNumber("CIN999");
+        receiver.setTransferQuantity(new BigDecimal("100.00"));
+        request.getData().setReceiverLists(Collections.singletonList(receiver));
+        request.getData().setRequestPriceValue(new BigDecimal("50.00"));
+        request.getData().setSenderInvestmentAccountChecksumIdentifier("chk1");
 
         // Act & Assert
         InternalServerErrorException exception = assertThrows(
                 InternalServerErrorException.class,
-                () -> tradeLimitService.retrieveLimitations(requestHeader)
+                () -> tradeTransferService.createTransfers(requestHeader, request)
         );
 
-        assertEquals(ErrorCodes.UNEXPECTED_RESULT_SRBP_ONLINE_ERROR.getValue(), exception.getMessage());
+        assertEquals("UNEXPECTED_RESULT_SRBP_ONLINE_ERROR", exception.getMessage());
     }
 
     @Test
-    void testRetrieveLimitations_LimitEnquiryCallException() {
-        // Arrange: 获取限额查询失败
-        when(restClientService.get(anyString(), anyMap(), eq(LimitEnquiryResponse.class), anyInt(), anyBoolean()))
-                .thenThrow(new RuntimeException("CLC service down"));
+    void testCreateTransfers_NullReceiverList() {
+        // Arrange
+        CreateTransferRequest request = new CreateTransferRequest();
+        request.getData().setReceiverLists(null);
+        request.getData().setSenderInvestmentAccountChecksumIdentifier("chk1");
 
-        // Act & Assert
-        InternalServerErrorException exception = assertThrows(
-                InternalServerErrorException.class,
-                () -> tradeLimitService.retrieveLimitations(requestHeader)
-        );
+        // Act
+        CreateTransferResponse response = tradeTransferService.createTransfers(requestHeader, request);
 
-        assertEquals("CLC_UNEXPECTED_ERROR", exception.getMessage());
+        // Assert: 无异常，继续执行
+        assertNotNull(response);
+        verify(sreValidationService, times(0)).callSreForTransferValidation(anyString(), anyString(), anyString(), anyMap());
     }
 
-    // ==================== 测试辅助方法 ====================
+    // ==================== 测试 modifyTransfers ====================
 
     @Test
-    void testExtractTransactionDetails_NullResponse() {
-        List<TransactionLimitDetailList> result = tradeLimitService.extractTransactionDetails(null);
-        assertNull(result);
+    void testModifyTransfers_Accept_Success() {
+        // Arrange
+        UpdateTransferRequest request = new UpdateTransferRequest();
+        request.getData().setTransferActionCode(TransferActionCode.A);
+        request.getData().setReceiverInvestmentAccountChecksumIdentifier("chk1");
+        request.getData().setReceiverCustomerInternalNumber("CIN999");
+
+        // Act
+        UpdateTransferResponse response = tradeTransferService.modifyTransfers(requestHeader, request);
+
+        // Assert
+        assertNotNull(response);
+        assertNotNull(response.getData());
+        assertEquals("CIN12345", request.getData().getReceiverCustomerInternalNumber()); // 被覆盖
+        assertEquals(new BigDecimal("1234.56"), request.getData().getReceivePriceValue());
+        assertEquals("HKD", request.getData().getReceivePriceCurrencyCode());
+
+        verify(sreValidationService, times(1)).callSreForTransferValidation(
+                eq("dac_tokenized_gold_transfer_receiver_rule"), anyString(), eq("CIN999"), anyMap());
+        verify(restClientService, times(1)).get(anyString(), anyMap(), eq(GoldPriceResponse.class), anyInt(), anyBoolean());
     }
 
     @Test
-    void testExtractTransactionDetails_EmptyResponse() {
-        LimitEnquiryResponse response = new LimitEnquiryResponse();
-        List<TransactionLimitDetailList> result = tradeLimitService.extractTransactionDetails(response);
-        assertNull(result);
+    void testModifyTransfers_Reject_Success() {
+        // Arrange
+        UpdateTransferRequest request = new UpdateTransferRequest();
+        request.getData().setTransferActionCode(TransferActionCode.R);
+        request.getData().setReceiverInvestmentAccountChecksumIdentifier("chk1");
+
+        // Act
+        UpdateTransferResponse response = tradeTransferService.modifyTransfers(requestHeader, request);
+
+        // Assert
+        assertNotNull(response);
+        assertEquals("CIN12345", request.getData().getReceiverCustomerInternalNumber()); // 被覆盖
+        verify(sreValidationService, times(0)).callSreForTransferValidation(anyString(), anyString(), anyString(), anyMap());
     }
 
     @Test
-    void testExtractTransactionDetails_ValidResponse() {
-        TransactionLimitDetailList detail = new TransactionLimitDetailList();
-        detail.setLimitType("P2PS");
+    void testModifyTransfers_OtherAction_NoValidation() {
+        // Arrange
+        UpdateTransferRequest request = new UpdateTransferRequest();
+        request.getData().setTransferActionCode(TransferActionCode.C); // 其他操作
+        request.getData().setReceiverInvestmentAccountChecksumIdentifier("chk1");
 
-        LimitEnquiryResponse response = new LimitEnquiryResponse();
-        response.setCbHkHbapObsShrdClcTranLmtEnqWpbSrvOperationResponse(
-                new com.hsbc.trade.transfer.domain.limit.CbHkHbapObsShrdClcTranLmtEnqWpbSrvOperationResponse()
-                        .withResponsePayload(
-                                new com.hsbc.trade.transfer.domain.limit.ResponsePayload()
-                                        .withResponseWork(
-                                                new com.hsbc.trade.transfer.domain.limit.ResponseWork()
-                                                        .withResponseWorkRecord(
-                                                                new com.hsbc.trade.transfer.domain.limit.ResponseWorkRecord()
-                                                                        .withTransactionLimitDetail(Collections.singletonList(detail))
-                                                        )
-                                        )
-                        )
-        );
+        // Act
+        UpdateTransferResponse response = tradeTransferService.modifyTransfers(requestHeader, request);
 
-        List<TransactionLimitDetailList> result = tradeLimitService.extractTransactionDetails(response);
-        assertNotNull(result);
+        // Assert
+        assertNotNull(response);
+        verify(sreValidationService, times(0)).callSreForTransferValidation(anyString(), anyString(), anyString(), anyMap());
+    }
+
+    // ==================== 测试私有方法 ====================
+
+    @Test
+    void testExtractAccountIdMap_Empty() {
+        CustomerAccounts accounts = new CustomerAccounts();
+        accounts.setInvestmentAccountList(null);
+        Map<String, String> result = tradeTransferService.extractAccountIdMap(accounts);
+        assertTrue(result.isEmpty());
+    }
+
+    @Test
+    void testExtractAccountIdMap_Valid() {
+        InvestmentAccount acc = new InvestmentAccount();
+        AccountId id = new AccountId();
+        id.setCountryAccountCode("HK");
+        id.setGroupMemberAccountCode("GRP");
+        id.setAccountNumber("ACC123");
+        id.setAccountProductTypeCode("INV");
+        id.setAccountTypeCode("SAV");
+        id.setAccountCurrencyCode("HKD");
+        acc.setInvestmentAccountId(id);
+        acc.setChecksum("chk1");
+
+        CustomerAccounts accounts = new CustomerAccounts();
+        accounts.setInvestmentAccountList(Collections.singletonList(acc));
+
+        Map<String, String> result = tradeTransferService.extractAccountIdMap(accounts);
         assertEquals(1, result.size());
-        assertEquals("P2PS", result.get(0).getLimitType());
+        assertEquals("countryAccountCode=HK;groupMemberAccountCode=GRP;accountNumber=ACC123;accountProductTypeCode=INV;accountTypeCode=SAV;accountCurrencyCode=HKD",
+                result.get("chk1"));
     }
 
     @Test
-    void testFindP2PSLimitDetail_Found() {
-        TransactionLimitDetailList p2ps = new TransactionLimitDetailList();
-        p2ps.setLimitType("P2PS");
+    void testMaskNamesInResponse_TransferList_Success() {
+        RetrieveTransferListResponseData data = new RetrieveTransferListResponseData();
+        TransferListItemInfo item = new TransferListItemInfo();
+        item.setSenderCustomerFirstName("John");
+        item.setSenderCustomerMiddleName("Michael");
+        item.setTransferSideCode(TransferSideCode.RECEIVER);
+        data.setTransferLists(Collections.singletonList(item));
 
-        TransactionLimitDetailList other = new TransactionLimitDetailList();
-        other.setLimitType("OTHER");
+        tradeTransferService.maskNamesInResponse(data);
 
-        List<TransactionLimitDetailList> details = Arrays.asList(p2ps, other);
-
-        TransactionLimitDetailList result = tradeLimitService.findP2PSLimitDetail(details);
-        assertEquals(p2ps, result);
+        assertEquals("J****", item.getSenderCustomerFirstName());
+        assertEquals("M******", item.getSenderCustomerMiddleName());
     }
 
     @Test
-    void testFindP2PSLimitDetail_NotFound() {
-        List<TransactionLimitDetailList> details = Collections.singletonList(
-                new TransactionLimitDetailList().setLimitType("OTHER")
-        );
+    void testMaskNamesInResponse_TransferDetail_Success() {
+        RetrieveTransferDetailResponseData data = new RetrieveTransferDetailResponseData();
+        data.setSenderCustomerFirstName("Alice");
+        data.setSenderCustomerMiddleName("Brown");
+        data.setTransferSideCode(TransferSideCode.RECEIVER);
+        data.setIsReceiverBankCustomer("Y");
 
-        TransactionLimitDetailList result = tradeLimitService.findP2PSLimitDetail(details);
+        tradeTransferService.maskNamesInResponse(data);
+
+        assertEquals("A****", data.getReceiverCustomerFirstName());
+        assertEquals("B****", data.getReceiverCustomerMiddleName());
+    }
+
+    @Test
+    void testMaskNamesInResponse_ReflectionException() {
+        // 模拟反射找不到方法
+        Object mockObj = new Object() {
+            public String getNonExistentField() { return "test"; }
+        };
+
+        // 无异常，日志记录即可
+        tradeTransferService.maskFirstNameAndMiddleName(mockObj, "nonExistentField", "alsoNonExistent");
+        // 验证无异常抛出
+    }
+
+    @Test
+    void testFindAccountChecksumForAccountNumber_Found() {
+        InvestmentAccount acc = new InvestmentAccount();
+        AccountId id = new AccountId().setAccountNumber("ACC123");
+        acc.setInvestmentAccountId(id);
+        acc.setChecksum("chk1");
+
+        CustomerAccounts accounts = new CustomerAccounts();
+        accounts.setInvestmentAccountList(Collections.singletonList(acc));
+
+        String result = tradeTransferService.findAccountChecksumForAccountNumber(accounts, "ACC123");
+        assertEquals("chk1", result);
+    }
+
+    @Test
+    void testFindAccountChecksumForAccountNumber_NotFound() {
+        InvestmentAccount acc = new InvestmentAccount();
+        acc.setInvestmentAccountId(new AccountId().setAccountNumber("OTHER"));
+        CustomerAccounts accounts = new CustomerAccounts();
+        accounts.setInvestmentAccountList(Collections.singletonList(acc));
+
+        String result = tradeTransferService.findAccountChecksumForAccountNumber(accounts, "ACC123");
         assertNull(result);
     }
 
     @Test
-    void testExtractUtilizedAmount_Null() {
-        TransactionLimitDetailList detail = new TransactionLimitDetailList();
-        // 不设置 utilizedLimitAmount
-        BigDecimal result = tradeLimitService.extractUtilizedAmount(detail);
-        assertEquals(BigDecimal.ZERO, result);
-    }
+    void testValidateTransferLimits_DailyExceeded() {
+        RetrieveTransferLimitResponse limitResponse = createLimitResponseWithAvailableAmount(
+                new BigDecimal("5000.00"), new BigDecimal("50000.00"), new BigDecimal("200000.00"));
 
-    @Test
-    void testExtractUtilizedAmount_Valid() {
-        TransactionLimitDetailList detail = new TransactionLimitDetailList();
-        detail.setUtilizedLimitAmount(
-                new com.hsbc.trade.transfer.domain.limit.UtilizedLimitAmount()
-                        .withUtilizedLimitAmountValue(12345)
-                        .withUtilizedLimitAmountDecimal(2)
+        BigDecimal totalAmount = new BigDecimal("6000.00"); // 超过可用日限额
+
+        TransferLimitExceededException exception = assertThrows(
+                TransferLimitExceededException.class,
+                () -> tradeTransferService.validateTransferLimits(totalAmount, limitResponse)
         );
 
-        BigDecimal result = tradeLimitService.extractUtilizedAmount(detail);
-        assertEquals(new BigDecimal("123.45"), result);
+        assertEquals("Daily limit exceeded: 10000.00", exception.getMessage());
     }
 
     @Test
-    void testExtractMaxAmount_Null() {
-        TransactionLimitDetailList detail = new TransactionLimitDetailList();
-        BigDecimal result = tradeLimitService.extractMaxAmount(detail);
-        assertEquals(BigDecimal.ZERO, result);
-    }
+    void testValidateTransferLimits_MonthlyExceeded() {
+        RetrieveTransferLimitResponse limitResponse = createLimitResponseWithAvailableAmount(
+                new BigDecimal("10000.00"), new BigDecimal("40000.00"), new BigDecimal("200000.00"));
 
-    @Test
-    void testExtractMaxAmount_Valid() {
-        TransactionLimitDetailList detail = new TransactionLimitDetailList();
-        detail.setCurrentLimitAmount(
-                new com.hsbc.trade.transfer.domain.limit.CurrentLimitAmount()
-                        .withCurrentLimitAmountValue(99999)
-                        .withCurrentLimitAmountDecimal(2)
+        BigDecimal totalAmount = new BigDecimal("50000.00"); // 超过可用月限额
+
+        TransferLimitExceededException exception = assertThrows(
+                TransferLimitExceededException.class,
+                () -> tradeTransferService.validateTransferLimits(totalAmount, limitResponse)
         );
 
-        BigDecimal result = tradeLimitService.extractMaxAmount(detail);
-        assertEquals(new BigDecimal("999.99"), result);
+        assertEquals("Monthly limit exceeded: 50000.00", exception.getMessage());
     }
 
     @Test
-    void testGetValueDate() {
-        String result = tradeLimitService.getValueDate();
-        assertEquals(LocalDate.now().format(DateTimeFormatter.ofPattern("yyyy-MM-dd")), result);
-    }
+    void testValidateTransferLimits_YearlyExceeded() {
+        RetrieveTransferLimitResponse limitResponse = createLimitResponseWithAvailableAmount(
+                new BigDecimal("10000.00"), new BigDecimal("50000.00"), new BigDecimal("150000.00"));
 
-    @Test
-    void testBuildBaseHeaders() {
-        Map<String, String> headers = new HashMap<>();
-        headers.put(HTTPRequestHeaderConstants.X_HSBC_Saml, "saml1");
-        headers.put(HTTPRequestHeaderConstants.X_HSBC_Saml3, "saml3");
+        BigDecimal totalAmount = new BigDecimal("250000.00"); // 超过可用年限额
 
-        Map<String, String> result = tradeLimitService.buildBaseHeaders(headers);
+        TransferLimitExceededException exception = assertThrows(
+                TransferLimitExceededException.class,
+                () -> tradeTransferService.validateTransferLimits(totalAmount, limitResponse)
+        );
 
-        // 应该移除 SAML
-        assertFalse(result.containsKey(HTTPRequestHeaderConstants.X_HSBC_Saml));
-        assertFalse(result.containsKey(HTTPRequestHeaderConstants.X_HSBC_Saml3));
-
-        // 应该包含 E2E Token
-        assertEquals("mock-e2e-token", result.get(HTTPRequestHeaderConstants.X_HSBC_E2E_Trust_Token));
-        assertEquals("sourceSystemId", result.get(HTTPRequestHeaderConstants.X_HSBC_Source_System_Id));
-        assertEquals("clientId", result.get(HTTPRequestHeaderConstants.X_HSBC_Client_Id));
-        assertEquals("clientSecret", result.get(HTTPRequestHeaderConstants.X_HSBC_Client_Secret));
-        assertEquals("targetSystemEnvironmentId", result.get(HTTPRequestHeaderConstants.X_HSBC_Target_System_Environment_Id));
-        assertEquals("sessionCorrelationId", result.get(HTTPRequestHeaderConstants.X_HSBC_Session_Correlation_Id));
-        assertEquals("gbgf", result.get(HTTPRequestHeaderConstants.X_HSBC_GBGF));
-        assertEquals("clientIp", result.get(HTTPRequestHeaderConstants.HSBC_Client_Ip));
-        assertTrue(result.containsKey(HTTPRequestHeaderConstants.X_HSBC_Request_Correlation_Id)); // UUID
-    }
-
-    @Test
-    void testBuildContactEnquiryUri() {
-        ContactEnquiryParams params = new ContactEnquiryParams.Builder()
-                .bankNumber("BANK1")
-                .channelIndicator("C")
-                .enquiryChannel("EC")
-                .customerId("CUST")
-                .customerIdType("T")
-                .valueDate("2025-11-20")
-                .limitType("L")
-                .sequentIndicator("S")
-                .build();
-
-        URI uri = tradeLimitService.buildContactEnquiryUri(params);
-
-        assertEquals("https://example.com/contact-enquiry?bankNumber=BANK1&channelIndicator=C&enquiryChannel=EC&customerId=CUST&customerIdType=T&valueDate=2025-11-20&limitType=L&sequentIndicator=S", uri.toString());
+        assertEquals("Yearly limit exceeded: 200000.00", exception.getMessage());
     }
 
     // ==================== 辅助方法 ====================
 
-    private LimitEnquiryResponse createLimitEnquiryResponse(String limitType, long utilizedValue, long maxValue) {
-        TransactionLimitDetailList detail = new TransactionLimitDetailList();
-        detail.setLimitType(limitType);
-        detail.setUtilizedLimitAmount(
-                new com.hsbc.trade.transfer.domain.limit.UtilizedLimitAmount()
-                        .withUtilizedLimitAmountValue(utilizedValue)
-                        .withUtilizedLimitAmountDecimal(2)
-        );
-        detail.setCurrentLimitAmount(
-                new com.hsbc.trade.transfer.domain.limit.CurrentLimitAmount()
-                        .withCurrentLimitAmountValue(maxValue)
-                        .withCurrentLimitAmountDecimal(2)
-        );
-
-        LimitEnquiryResponse response = new LimitEnquiryResponse();
-        response.setCbHkHbapObsShrdClcTranLmtEnqWpbSrvOperationResponse(
-                new com.hsbc.trade.transfer.domain.limit.CbHkHbapObsShrdClcTranLmtEnqWpbSrvOperationResponse()
-                        .withResponsePayload(
-                                new com.hsbc.trade.transfer.domain.limit.ResponsePayload()
-                                        .withResponseWork(
-                                                new com.hsbc.trade.transfer.domain.limit.ResponseWork()
-                                                        .withResponseWorkRecord(
-                                                                new com.hsbc.trade.transfer.domain.limit.ResponseWorkRecord()
-                                                                        .withTransactionLimitDetail(Collections.singletonList(detail))
-                                                        )
-                                        )
-                        )
-        );
-
-        return response;
-    }
-
-    private RetrieveTransferAmountResponse createDefaultTransferAmountResponse() {
-        return createTransferAmountResponse(
-                new BigDecimal("10000"), // monthlyUsed
-                new BigDecimal("50000"), // yearlyUsed
-                1 // usedMonthlyCount
-        );
-    }
-
-    private RetrieveTransferAmountResponse createTransferAmountResponse(BigDecimal monthlyUsed, BigDecimal yearlyUsed, int usedMonthlyCount) {
-        RetrieveTransferAmountResponse response = new RetrieveTransferAmountResponse();
-        RetrieveTransferAmountResponse.Data data = new RetrieveTransferAmountResponse.Data();
-        data.setMonthlyTransferAmount(monthlyUsed);
-        data.setYearlyTransferAmount(yearlyUsed);
-        data.setMonthlyTransferCount(usedMonthlyCount);
+    private RetrieveTransferLimitResponse createDefaultLimitResponse() {
+        RetrieveTransferLimitResponse response = new RetrieveTransferLimitResponse();
+        RetrieveTransferLimitResponse.Data data = new RetrieveTransferLimitResponse.Data();
+        data.setMaxDailyLimitedAmount(new BigDecimal("10000.00"));
+        data.setMaxMonthlyLimitedAmount(new BigDecimal("50000.00"));
+        data.setMaxYearlyLimitedAmount(new BigDecimal("200000.00"));
+        data.setAvailableTodayAmount(new BigDecimal("10000.00"));
+        data.setAvailableMonthToDateAmount(new BigDecimal("50000.00"));
+        data.setAvailableYearToDateAmount(new BigDecimal("200000.00"));
+        data.setMaxMonthlyTransferCount("5");
+        data.setAvailableMonthlyTransferCount("4");
         response.setData(data);
         return response;
+    }
+
+    private RetrieveTransferLimitResponse createLimitResponseWithAvailableAmount(BigDecimal daily, BigDecimal monthly, BigDecimal yearly) {
+        RetrieveTransferLimitResponse response = new RetrieveTransferLimitResponse();
+        RetrieveTransferLimitResponse.Data data = new RetrieveTransferLimitResponse.Data();
+        data.setMaxDailyLimitedAmount(new BigDecimal("10000.00"));
+        data.setMaxMonthlyLimitedAmount(new BigDecimal("50000.00"));
+        data.setMaxYearlyLimitedAmount(new BigDecimal("200000.00"));
+        data.setAvailableTodayAmount(daily);
+        data.setAvailableMonthToDateAmount(monthly);
+        data.setAvailableYearToDateAmount(yearly);
+        response.setData(data);
+        return response;
+    }
+
+    private GoldPriceResponse createGoldPriceResponse() {
+        GoldPriceResponse response = new GoldPriceResponse();
+        GoldPriceResponseData data = new GoldPriceResponseData();
+        data.setGoldPriceAmount(new BigDecimal("1234.56"));
+        data.setPublishTime("2025-11-20T10:00:00Z");
+        response.setData(data);
+        return response;
+    }
+
+    private PartyNameResponse createPartyNameResponse() {
+        PartyNameResponse response = new PartyNameResponse();
+        PartyNameResponse.Name name = new PartyNameResponse.Name();
+        name.setLastName("Smith");
+        name.setGivenName("John");
+        name.setCustomerChristianName("A");
+        response.setName(name);
+        return response;
+    }
+
+    private PartyContactResponse createPartyContactResponse() {
+        PartyContactResponse response = new PartyContactResponse();
+        PartyContactResponse.Contact contact = new PartyContactResponse.Contact();
+        contact.setMobileNumber1("+85291234567");
+        response.setContact(contact);
+        return response;
+    }
+
+    private CustomerAccounts createCustomerAccounts() {
+        CustomerAccounts accounts = new CustomerAccounts();
+        InvestmentAccount acc = new InvestmentAccount();
+        AccountId id = new AccountId();
+        id.setAccountNumber("ACC123");
+        acc.setInvestmentAccountId(id);
+        acc.setChecksum("chk1");
+        accounts.setInvestmentAccountList(Collections.singletonList(acc));
+        return accounts;
+    }
+
+    private RetrieveTransferListResponse createRetrieveTransferListResponse() {
+        RetrieveTransferListResponse response = new RetrieveTransferListResponse();
+        RetrieveTransferListResponseData data = new RetrieveTransferListResponseData();
+        TransferListItemInfo item = new TransferListItemInfo();
+        item.setSenderCustomerFirstName("John");
+        item.setSenderCustomerMiddleName("Michael");
+        item.setTransferSideCode(TransferSideCode.RECEIVER);
+        data.setTransferLists(Collections.singletonList(item));
+        response.setData(data);
+        return response;
+    }
+
+    private RetrieveTransferDetailResponse createRetrieveTransferDetailResponse() {
+        RetrieveTransferDetailResponse response = new RetrieveTransferDetailResponse();
+        RetrieveTransferDetailResponseData data = new RetrieveTransferDetailResponseData();
+        data.setInvestmentAccount(new InvestmentAccount().setAccountNumber("ACC123"));
+        data.setTransferSideCode(TransferSideCode.RECEIVER);
+        data.setIsReceiverBankCustomer("Y");
+        response.setData(data);
+        return response;
+    }
+
+    private CreateTransferResponse createCreateTransferResponse() {
+        CreateTransferResponse response = new CreateTransferResponse();
+        CreateTransferResponse.Data data = new CreateTransferResponse.Data();
+        List<TransferOrderInfo> orders = new ArrayList<>();
+        TransferOrderInfo order = new TransferOrderInfo();
+        orders.add(order);
+        data.setTransferOrderLists(orders);
+        response.setData(data);
+        return response;
+    }
+
+    private UpdateTransferResponse createUpdateTransferResponse() {
+        UpdateTransferResponse response = new UpdateTransferResponse();
+        UpdateTransferResponse.Data data = new UpdateTransferResponse.Data();
+        response.setData(data);
+        return response;
+    }
+
+    private AccountId createAccountId() {
+        AccountId id = new AccountId();
+        id.setAccountNumber("ACC123");
+        return id;
     }
 }
