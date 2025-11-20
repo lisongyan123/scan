@@ -1,0 +1,264 @@
+@Test
+void testRetrieveLimitations_noTransactionDetails_setsZeroAvailableToday() {
+    // Arrange
+    when(customerLimitConfig.getDailyAmount()).thenReturn(BigDecimal.valueOf(1000));
+
+    LimitEnquiryResponse limitEnquiryResponse = mock(LimitEnquiryResponse.class);
+    when(limitEnquiryResponse.getCbHkHbapObsShrdClcTranLmtEnqWpbSrvOperationResponse()).thenReturn(null);
+    when(restClientService.get(anyString(), anyMap(), eq(LimitEnquiryResponse.class), anyInt(), anyBoolean()))
+            .thenReturn(limitEnquiryResponse);
+
+    RetrieveTransferAmountResponse transferAmountResponse = new RetrieveTransferAmountResponse();
+    RetrieveTransferAmountResponseData data = new RetrieveTransferAmountResponseData();
+    data.setMonthlyTransferCount(5);
+    data.setMonthlyTransferAmount(BigDecimal.valueOf(100));
+    data.setYearlyTransferAmount(BigDecimal.valueOf(200));
+    transferAmountResponse.setData(data);
+    when(restClientService.get(contains("/trade-amount"), anyMap(), eq(RetrieveTransferAmountResponse.class), anyInt(), anyBoolean()))
+            .thenReturn(transferAmountResponse);
+
+    // Act
+    RetrieveTransferLimitResponse response = tradeLimitService.retrieveLimitations(headers);
+
+    // Assert
+    assertThat(response).isNotNull();
+    assertThat(response.getData().getAvailableTodayAmount()).isEqualTo(BigDecimal.ZERO);
+}
+
+@Test
+void testRetrieveLimitations_noP2PSLimitDetail_setsZeroAvailableToday() {
+    // Arrange
+    when(customerLimitConfig.getDailyAmount()).thenReturn(BigDecimal.valueOf(1000));
+
+    LimitEnquiryResponsePayload payload = new LimitEnquiryResponsePayload();
+    LimitEnquiryResponseDataWrapper responsePayload = new LimitEnquiryResponseDataWrapper();
+    LimitEnquiryResponseRecord responseWork = new LimitEnquiryResponseRecord();
+    LimitEnquiryResponseData responseWorkRecord = new LimitEnquiryResponseData();
+
+    List<TransactionLimitDetailList> details = new ArrayList<>();
+    TransactionLimitDetailList nonP2PS = new TransactionLimitDetailList();
+    nonP2PS.setLimitType("OTHER");
+    details.add(nonP2PS);
+
+    responseWorkRecord.setTransactionLimitDetail(details);
+    responseWork.setResponseWorkRecord(responseWorkRecord);
+    responsePayload.setResponseWork(responseWork);
+    payload.setResponsePayload(responsePayload);
+
+    LimitEnquiryResponse limitEnquiryResponse = mock(LimitEnquiryResponse.class);
+    when(limitEnquiryResponse.getCbHkHbapObsShrdClcTranLmtEnqWpbSrvOperationResponse()).thenReturn(payload);
+    when(restClientService.get(anyString(), anyMap(), eq(LimitEnquiryResponse.class), anyInt(), anyBoolean()))
+            .thenReturn(limitEnquiryResponse);
+
+    RetrieveTransferAmountResponse transferAmountResponse = mock(RetrieveTransferAmountResponse.class);
+    RetrieveTransferAmountResponseData data = new RetrieveTransferAmountResponseData();
+    data.setMonthlyTransferCount(5);
+    data.setMonthlyTransferAmount(BigDecimal.valueOf(100));
+    data.setYearlyTransferAmount(BigDecimal.valueOf(200));
+    when(transferAmountResponse.getData()).thenReturn(data);
+    when(restClientService.get(contains("/trade-amount"), anyMap(), eq(RetrieveTransferAmountResponse.class), anyInt(), anyBoolean()))
+            .thenReturn(transferAmountResponse);
+
+    // Act
+    RetrieveTransferLimitResponse response = tradeLimitService.retrieveLimitations(headers);
+
+    // Assert
+    assertThat(response.getData().getAvailableTodayAmount()).isEqualTo(BigDecimal.ZERO);
+}
+
+@Test
+void testRetrieveLimitations_dailyLimitAvailable_calculatesCorrectly() {
+    // Arrange
+    when(customerLimitConfig.getDailyAmount()).thenReturn(BigDecimal.valueOf(1000));
+
+    LimitEnquiryResponsePayload payload = new LimitEnquiryResponsePayload();
+    LimitEnquiryResponseDataWrapper responsePayload = new LimitEnquiryResponseDataWrapper();
+    LimitEnquiryResponseRecord responseWork = new LimitEnquiryResponseRecord();
+    LimitEnquiryResponseData responseWorkRecord = new LimitEnquiryResponseData();
+
+    List<TransactionLimitDetailList> details = new ArrayList<>();
+    TransactionLimitDetailList p2psDetail = new TransactionLimitDetailList();
+    p2psDetail.setLimitType("P2PS");
+
+    UtilizedLimitAmount utilized = new UtilizedLimitAmount();
+    utilized.setUtilizedLimitAmountValue(20000L); // 200.00
+    utilized.setUtilizedLimitAmountDecimal(2);
+    p2psDetail.setUtilizedLimitAmount(utilized);
+
+    CurrentLimitAmount current = new CurrentLimitAmount();
+    current.setCurrentLimitAmountValue(100000L); // 1000.00
+    current.setCurrentLimitAmountDecimal(2);
+    p2psDetail.setCurrentLimitAmount(current);
+
+    details.add(p2psDetail);
+    responseWorkRecord.setTransactionLimitDetail(details);
+    responseWork.setResponseWorkRecord(responseWorkRecord);
+    responsePayload.setResponseWork(responseWork);
+    payload.setResponsePayload(responsePayload);
+
+    LimitEnquiryResponse limitEnquiryResponse = mock(LimitEnquiryResponse.class);
+    when(limitEnquiryResponse.getCbHkHbapObsShrdClcTranLmtEnqWpbSrvOperationResponse()).thenReturn(payload);
+    when(restClientService.get(anyString(), anyMap(), eq(LimitEnquiryResponse.class), anyInt(), anyBoolean()))
+            .thenReturn(limitEnquiryResponse);
+
+    RetrieveTransferAmountResponse transferAmountResponse = new RetrieveTransferAmountResponse();
+    RetrieveTransferAmountResponseData data = new RetrieveTransferAmountResponseData();
+    data.setMonthlyTransferCount(5);
+    data.setMonthlyTransferAmount(BigDecimal.valueOf(100));
+    data.setYearlyTransferAmount(BigDecimal.valueOf(200));
+    transferAmountResponse.setData(data);
+    when(restClientService.get(contains("/trade-amount"), anyMap(), eq(RetrieveTransferAmountResponse.class), anyInt(), anyBoolean()))
+            .thenReturn(transferAmountResponse);
+
+    // Act
+    RetrieveTransferLimitResponse response = tradeLimitService.retrieveLimitations(headers);
+
+    // Assert
+    assertThat(response.getData().getAvailableTodayAmount()).isEqualTo(BigDecimal.valueOf(800.00));
+}
+
+@Test
+void testRetrieveLimitations_monthlyCountExceeded_throwsException() {
+    // Arrange
+    when(customerLimitConfig.getMonthlyCount()).thenReturn(5);
+
+    LimitEnquiryResponse limitEnquiryResponse = mock(LimitEnquiryResponse.class);
+    when(restClientService.get(anyString(), anyMap(), eq(LimitEnquiryResponse.class), anyInt(), anyBoolean()))
+            .thenReturn(limitEnquiryResponse);
+
+    RetrieveTransferAmountResponse transferAmountResponse = new RetrieveTransferAmountResponse();
+    RetrieveTransferAmountResponseData data = new RetrieveTransferAmountResponseData();
+    data.setMonthlyTransferCount(6); // > 5
+    data.setMonthlyTransferAmount(BigDecimal.valueOf(100));
+    data.setYearlyTransferAmount(BigDecimal.valueOf(200));
+    transferAmountResponse.setData(data);
+    when(restClientService.get(contains("/trade-amount"), anyMap(), eq(RetrieveTransferAmountResponse.class), anyInt(), anyBoolean()))
+            .thenReturn(transferAmountResponse);
+
+    // Act & Assert
+    TransferLimitExceededException thrown = assertThrows(
+        TransferLimitExceededException.class,
+        () -> tradeLimitService.retrieveLimitations(headers)
+    );
+    assertThat(thrown.getMessage()).contains("monthly count limit exceeded");
+}
+
+@Test
+void testRetrieveLimitations_monthlyAmountExceeded_throwsException() {
+    // Arrange
+    when(customerLimitConfig.getMonthlyAmount()).thenReturn(BigDecimal.valueOf(500));
+
+    LimitEnquiryResponse limitEnquiryResponse = mock(LimitEnquiryResponse.class);
+    when(restClientService.get(anyString(), anyMap(), eq(LimitEnquiryResponse.class), anyInt(), anyBoolean()))
+            .thenReturn(limitEnquiryResponse);
+
+    RetrieveTransferAmountResponse transferAmountResponse = new RetrieveTransferAmountResponse();
+    RetrieveTransferAmountResponseData data = new RetrieveTransferAmountResponseData();
+    data.setMonthlyTransferCount(3);
+    data.setMonthlyTransferAmount(BigDecimal.valueOf(600)); // > 500
+    data.setYearlyTransferAmount(BigDecimal.valueOf(200));
+    transferAmountResponse.setData(data);
+    when(restClientService.get(contains("/trade-amount"), anyMap(), eq(RetrieveTransferAmountResponse.class), anyInt(), anyBoolean()))
+            .thenReturn(transferAmountResponse);
+
+    // Act & Assert
+    TransferLimitExceededException thrown = assertThrows(
+        TransferLimitExceededException.class,
+        () -> tradeLimitService.retrieveLimitations(headers)
+    );
+    assertThat(thrown.getMessage()).contains("monthly amount limit exceeded");
+}
+
+@Test
+void testRetrieveLimitations_yearlyAmountExceeded_throwsException() {
+    // Arrange
+    when(customerLimitConfig.getYearlyAmount()).thenReturn(BigDecimal.valueOf(1000));
+
+    LimitEnquiryResponse limitEnquiryResponse = mock(LimitEnquiryResponse.class);
+    when(restClientService.get(anyString(), anyMap(), eq(LimitEnquiryResponse.class), anyInt(), anyBoolean()))
+            .thenReturn(limitEnquiryResponse);
+
+    RetrieveTransferAmountResponse transferAmountResponse = new RetrieveTransferAmountResponse();
+    RetrieveTransferAmountResponseData data = new RetrieveTransferAmountResponseData();
+    data.setMonthlyTransferCount(3);
+    data.setMonthlyTransferAmount(BigDecimal.valueOf(500));
+    data.setYearlyTransferAmount(BigDecimal.valueOf(1200)); // > 1000
+    transferAmountResponse.setData(data);
+    when(restClientService.get(contains("/trade-amount"), anyMap(), eq(RetrieveTransferAmountResponse.class), anyInt(), anyBoolean()))
+            .thenReturn(transferAmountResponse);
+
+    // Act & Assert
+    TransferLimitExceededException thrown = assertThrows(
+        TransferLimitExceededException.class,
+        () -> tradeLimitService.retrieveLimitations(headers)
+    );
+    assertThat(thrown.getMessage()).contains("yearly amount limit exceeded");
+}
+
+@Test
+void testBuildBaseHeaders_includesAllExpectedHeaders() {
+    // Arrange
+    headers.put("X-HSBC-Saml", "saml-token");
+    headers.put("X-HSBC-Saml3", "saml3-token");
+
+    // Act
+    Map<String, String> baseHeaders = tradeLimitService.buildBaseHeaders(headers);
+
+    // Assert
+    assertThat(baseHeaders).containsKey("X-HSBC-E2E-Trust-Token");
+    assertThat(baseHeaders).containsEntry("X-HSBC-Source-System-Id", "SRC");
+    assertThat(baseHeaders).containsEntry("HSBC-Client-Ip", "127.0.0.1");
+    assertThat(baseHeaders).containsEntry("X-HSBC-Client-Id", "CID");
+    assertThat(baseHeaders).doesNotContainKey("X-HSBC-Saml");
+    assertThat(baseHeaders).doesNotContainKey("X-HSBC-Saml3");
+    assertThat(baseHeaders).hasSizeGreaterThan(5);
+}
+
+@Test
+void testGetValueDate_returnsTodayInYYYYMMddFormat() {
+    // Act
+    String valueDate = tradeLimitService.getValueDate();
+
+    // Assert
+    LocalDate today = LocalDate.now();
+    String expected = today.format(DateTimeFormatter.ofPattern("yyyy-MM-dd"));
+    assertThat(valueDate).isEqualTo(expected);
+}
+
+@Test
+void testBuildContactEnquiryUri_constructsCorrectUrl() {
+    // Arrange
+    ContactEnquiryParams params = new ContactEnquiryParams.Builder()
+            .bankNumber("004")
+            .customerId("CUST123")
+            .customerIdType("CIN")
+            .channelIndicator("I")
+            .enquiryChannel("O")
+            .valueDate("2025-11-20")
+            .limitType("P2PS")
+            .sequentIndicator("N")
+            .build();
+
+    // Act
+    URI uri = tradeLimitServiceImpl.buildContactEnquiryUri(params); // 注意使用 @InjectMocks 实例
+
+    // Assert
+    assertThat(uri.toString()).contains("https://enquiry.example.com/limit");
+    assertThat(uri.getQuery()).contains("bankNumber=004");
+    assertThat(uri.getQuery()).contains("customerId=CUST123");
+    assertThat(uri.getQuery()).contains("valueDate=2025-11-20");
+}
+
+@Test
+void testRetrieveTransferAmount_serviceCallFails_throwsInternalServerError() {
+    // Arrange
+    when(restClientService.get(anyString(), anyMap(), eq(RetrieveTransferAmountResponse.class), anyInt(), anyBoolean()))
+            .thenThrow(new RuntimeException("Network error"));
+
+    // Act & Assert
+    InternalServerErrorException thrown = assertThrows(
+        InternalServerErrorException.class,
+        () -> tradeLimitService.retrieveTransferAmount(headers)
+    );
+    assertThat(thrown.getMessage()).isEqualTo(ErrorCodes.UNEXPECTED_RESULT_SRBP_ONLINE_ERROR.getValue());
+}
