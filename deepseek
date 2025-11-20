@@ -1,0 +1,635 @@
+package com.hsbc.trade.transfer.service.impl;
+
+import com.hsbc.trade.HTTPRequestHeaderConstants;
+import com.hsbc.trade.common.AccountId;
+import com.hsbc.trade.common.ResponseDetails;
+import com.hsbc.trade.service.RestClientService;
+import com.hsbc.trade.service.impl.RetrieveCustomerProfilesServiceImpl;
+import com.hsbc.trade.transfer.common.*;
+import com.hsbc.trade.transfer.createtransfer.CreateTransferRequest;
+import com.hsbc.trade.transfer.createtransfer.CreateTransferRequestData;
+import com.hsbc.trade.transfer.createtransfer.CreateTransferResponse;
+import com.hsbc.trade.transfer.createtransfer.TransferOrderInfo;
+import com.hsbc.trade.transfer.domain.InvestmentAccountId;
+import com.hsbc.trade.transfer.domain.InvestmentAccountIdList;
+import com.hsbc.trade.transfer.domain.RetrieveCustomerAccountsIdListResponse;
+import com.hsbc.trade.transfer.domain.account.CustomerAccounts;
+import com.hsbc.trade.transfer.domain.account.InvestmentAccount;
+import com.hsbc.trade.transfer.domain.cep.PartyContactResponse;
+import com.hsbc.trade.transfer.domain.cep.PartyContactResponseData;
+import com.hsbc.trade.transfer.domain.cep.PartyNameResponse;
+import com.hsbc.trade.transfer.domain.cep.PartyNameResponseData;
+import com.hsbc.trade.transfer.domain.eligibility.RuleResponse;
+import com.hsbc.trade.transfer.domain.mds.GoldPriceResponse;
+import com.hsbc.trade.transfer.domain.mds.GoldPriceResponseData;
+import com.hsbc.trade.transfer.exception.TransferLimitExceededException;
+import com.hsbc.trade.transfer.retrievetransferdetail.RetrieveTransferDetailResponse;
+import com.hsbc.trade.transfer.retrievetransferdetail.RetrieveTransferDetailResponseData;
+import com.hsbc.trade.transfer.retrievetransferlimit.RetrieveTransferLimitResponse;
+import com.hsbc.trade.transfer.retrievetransferlimit.RetrieveTransferLimitResponseData;
+import com.hsbc.trade.transfer.retrievetransferlist.RetrieveTransferListResponse;
+import com.hsbc.trade.transfer.retrievetransferlist.RetrieveTransferListResponseData;
+import com.hsbc.trade.transfer.updatetransfer.UpdateTransferRequest;
+import com.hsbc.trade.transfer.updatetransfer.UpdateTransferRequestData;
+import com.hsbc.trade.transfer.updatetransfer.UpdateTransferResponse;
+import com.hsbc.trade.utils.E2ETrustTokenUtil;
+import jakarta.ws.rs.BadRequestException;
+import jakarta.ws.rs.InternalServerErrorException;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.extension.ExtendWith;
+import org.mockito.InjectMocks;
+import org.mockito.Mock;
+import org.mockito.Spy;
+import org.mockito.junit.jupiter.MockitoExtension;
+import org.springframework.test.util.ReflectionTestUtils;
+
+import java.lang.reflect.Method;
+import java.math.BigDecimal;
+import java.util.*;
+
+import static org.junit.jupiter.api.Assertions.*;
+import static org.mockito.ArgumentMatchers.*;
+import static org.mockito.Mockito.*;
+
+@ExtendWith(MockitoExtension.class)
+class TradeTransferServiceImplTest {
+
+    @InjectMocks
+    private TradeTransferServiceImpl tradeTransferService;
+
+    @Mock
+    private RestClientService restClientService;
+
+    @Mock
+    private RetrieveCustomerProfilesServiceImpl retrieveCustomerProfilesService;
+
+    @Mock
+    private SreValidationServiceImpl sreValidationService;
+
+    @Mock
+    private TradeLimitServiceImpl tradeLimitService;
+
+    @Mock
+    private E2ETrustTokenUtil e2ETrustTokenUtil;
+
+    @Spy
+    @InjectMocks
+    private TradeTransferServiceImpl tradeTransferServiceSpy;
+
+    private final String dummyToken = "<saml:Assertion>dummy-token</saml:Assertion>";
+    private Map<String, String> sourceRequestHeader;
+
+    @BeforeEach
+    void setUp() {
+        ReflectionTestUtils.setField(tradeTransferService, "tradeOnlineUrl", "https://dummy.trade");
+        ReflectionTestUtils.setField(tradeTransferService, "customerAccountUrl", "https://dummy.accounts");
+        ReflectionTestUtils.setField(tradeTransferService, "timeout", 5000);
+        ReflectionTestUtils.setField(tradeTransferService, "printMessageLog", true);
+        
+        sourceRequestHeader = new HashMap<>();
+        sourceRequestHeader.put(HTTPRequestHeaderConstants.X_HSBC_CHNL_COUNTRYCODE, "HK");
+        sourceRequestHeader.put(HTTPRequestHeaderConstants.X_HSBC_CHNL_GROUP_MEMBER, "HBAP");
+        sourceRequestHeader.put(HTTPRequestHeaderConstants.X_HSBC_SAML, dummyToken);
+        sourceRequestHeader.put(HTTPRequestHeaderConstants.X_HSBC_SAML3, dummyToken);
+        sourceRequestHeader.put(HTTPRequestHeaderConstants.X_HSBC_CUSTOMER_ID, "CUST123");
+        
+        lenient().when(retrieveCustomerProfilesService.getCIN(any())).thenReturn("dummy-cin");
+        lenient().when(e2ETrustTokenUtil.generateE2ETrustToken(anyMap())).thenReturn("e2e-token");
+    }
+
+    // Helper methods
+    private CustomerAccounts createMockCustomerAccounts() {
+        CustomerAccounts customerAccounts = new CustomerAccounts();
+        List<InvestmentAccount> investmentAccountList = new ArrayList<>();
+        
+        InvestmentAccount account1 = new InvestmentAccount();
+        account1.setChecksum("CHECKSUM123");
+        InvestmentAccountId accountId1 = new InvestmentAccountId();
+        accountId1.setCountryAccountCode("HK");
+        accountId1.setGroupMemberAccountCode("HBAP");
+        accountId1.setAccountNumber("123456789");
+        accountId1.setAccountProductTypeCode("SAV");
+        accountId1.setAccountTypeCode("01");
+        accountId1.setAccountCurrencyCode("HKD");
+        account1.setInvestmentAccountId(accountId1);
+        
+        InvestmentAccount account2 = new InvestmentAccount();
+        account2.setChecksum("CHECKSUM456");
+        InvestmentAccountId accountId2 = new InvestmentAccountId();
+        accountId2.setCountryAccountCode("HK");
+        accountId2.setGroupMemberAccountCode("HBAP");
+        accountId2.setAccountNumber("987654321");
+        accountId2.setAccountProductTypeCode("SAV");
+        accountId2.setAccountTypeCode("01");
+        accountId2.setAccountCurrencyCode("HKD");
+        account2.setInvestmentAccountId(accountId2);
+        
+        investmentAccountList.add(account1);
+        investmentAccountList.add(account2);
+        customerAccounts.setInvestmentAccountList(investmentAccountList);
+        
+        return customerAccounts;
+    }
+
+    private PartyNameResponse createMockPartyNameResponse() {
+        PartyNameResponse response = new PartyNameResponse();
+        PartyNameResponseData data = new PartyNameResponseData();
+        data.setGivenName("John");
+        data.setCustomerChristianName("Michael");
+        data.setLastName("Doe");
+        response.setName(data);
+        return response;
+    }
+
+    private PartyContactResponse createMockPartyContactResponse() {
+        PartyContactResponse response = new PartyContactResponse();
+        PartyContactResponseData data = new PartyContactResponseData();
+        data.setMobileNumber1("12345678");
+        response.setContact(data);
+        return response;
+    }
+
+    private GoldPriceResponse createMockGoldPriceResponse() {
+        GoldPriceResponse response = new GoldPriceResponse();
+        GoldPriceResponseData data = new GoldPriceResponseData();
+        data.setGoldPriceAmount(new BigDecimal("1800.50"));
+        data.setPublishTime("2025-11-20T10:00:00Z");
+        response.setData(data);
+        return response;
+    }
+
+    private RetrieveTransferLimitResponse createMockTransferLimitResponse() {
+        RetrieveTransferLimitResponse response = new RetrieveTransferLimitResponse();
+        RetrieveTransferLimitResponseData data = new RetrieveTransferLimitResponseData();
+        data.setAvailableTodayAmount(new BigDecimal("10000.00"));
+        data.setAvailableMonthToDateAmount(new BigDecimal("50000.00"));
+        data.setAvailableYearToDateAmount(new BigDecimal("100000.00"));
+        data.setMaxDailyLimitedAmount(new BigDecimal("10000.00"));
+        data.setMaxMonthlyLimitedAmount(new BigDecimal("50000.00"));
+        data.setMaxYearlyLimitedAmount(new BigDecimal("100000.00"));
+        response.setData(data);
+        return response;
+    }
+
+    // Test cases
+
+    @Test
+    void retrieveTransferList_Success() {
+        // Arrange
+        RetrieveTransferListResponse mockResponse = new RetrieveTransferListResponse();
+        RetrieveTransferListResponseData responseData = new RetrieveTransferListResponseData();
+        responseData.setTransferLists(new ArrayList<>());
+        mockResponse.setData(responseData);
+        
+        ResponseDetails responseDetails = new ResponseDetails();
+        responseDetails.setResponseCodeNumber(0);
+        mockResponse.setResponseDetails(responseDetails);
+
+        when(restClientService.get(anyString(), anyMap(), eq(RetrieveTransferListResponse.class), anyInt(), anyBoolean()))
+                .thenReturn(mockResponse);
+
+        // Act
+        RetrieveTransferListResponse result = tradeTransferService.retrieveTransferList(
+                sourceRequestHeader, "ACCEPTED", Arrays.asList("123"), "1", "PROD1", "PLAIN_TEXT");
+
+        // Assert
+        assertNotNull(result);
+        assertEquals(0, result.getResponseDetails().getResponseCodeNumber());
+        verify(restClientService, times(1)).get(anyString(), anyMap(), eq(RetrieveTransferListResponse.class), anyInt(), anyBoolean());
+    }
+
+    @Test
+    void retrieveTransferList_WithException_ShouldThrowInternalServerError() {
+        // Arrange
+        when(restClientService.get(anyString(), anyMap(), eq(RetrieveTransferListResponse.class), anyInt(), anyBoolean()))
+                .thenThrow(new RuntimeException("Service unavailable"));
+
+        // Act & Assert
+        assertThrows(InternalServerErrorException.class, () -> {
+            tradeTransferService.retrieveTransferList(
+                    sourceRequestHeader, "ACCEPTED", Arrays.asList("123"), "1", "PROD1", "PLAIN_TEXT");
+        });
+    }
+
+    @Test
+    void retrieveTransferDetail_Success() {
+        // Arrange
+        String transferReferenceNumber = "TRANSFER123";
+        
+        RetrieveTransferDetailResponse mockResponse = new RetrieveTransferDetailResponse();
+        RetrieveTransferDetailResponseData responseData = new RetrieveTransferDetailResponseData();
+        InvestmentAccount investmentAccount = new InvestmentAccount();
+        InvestmentAccountId accountId = new InvestmentAccountId();
+        accountId.setAccountNumber("123456789");
+        investmentAccount.setInvestmentAccountId(accountId);
+        responseData.setInvestmentAccount(investmentAccount);
+        responseData.setTransferSideCode(TransferSideCode.SENDER);
+        responseData.setIsReceiverBankCustomer("Y");
+        responseData.setSenderCustomerFirstName("John");
+        responseData.setSenderCustomerMiddleName("Michael");
+        
+        mockResponse.setData(responseData);
+        
+        ResponseDetails responseDetails = new ResponseDetails();
+        responseDetails.setResponseCodeNumber(0);
+        mockResponse.setResponseDetails(responseDetails);
+
+        when(restClientService.get(anyString(), anyMap(), eq(RetrieveTransferDetailResponse.class), anyInt(), anyBoolean()))
+                .thenReturn(mockResponse);
+
+        // Act
+        RetrieveTransferDetailResponse result = tradeTransferService.retrieveTransferDetail(
+                sourceRequestHeader, transferReferenceNumber);
+
+        // Assert
+        assertNotNull(result);
+        assertEquals(0, result.getResponseDetails().getResponseCodeNumber());
+        verify(restClientService, times(1)).get(anyString(), anyMap(), eq(RetrieveTransferDetailResponse.class), anyInt(), anyBoolean());
+    }
+
+    @Test
+    void retrieveTransferDetail_WithException_ShouldThrowInternalServerError() {
+        // Arrange
+        String transferReferenceNumber = "TRANSFER123";
+        
+        when(restClientService.get(anyString(), anyMap(), eq(RetrieveTransferDetailResponse.class), anyInt(), anyBoolean()))
+                .thenThrow(new RuntimeException("Service unavailable"));
+
+        // Act & Assert
+        assertThrows(InternalServerErrorException.class, () -> {
+            tradeTransferService.retrieveTransferDetail(sourceRequestHeader, transferReferenceNumber);
+        });
+    }
+
+    @Test
+    void createTransfers_Success() {
+        // Arrange
+        CreateTransferRequest request = new CreateTransferRequest();
+        CreateTransferRequestData data = new CreateTransferRequestData();
+        request.setData(data);
+        
+        // Set sender checksum
+        request.getData().setSenderInvestmentAccountChecksumIdentifier("CHECKSUM123");
+        request.getData().setActionRequestCode(ActionRequestCode.D);
+        
+        // Create receiver list
+        List<ReceiverInfo> receivers = new ArrayList<>();
+        ReceiverInfo receiver = new ReceiverInfo();
+        receiver.setTransferQuantity(new BigDecimal("10.5"));
+        receiver.setReceiverCustomerNumber("RECEIVER123");
+        receivers.add(receiver);
+        request.getData().setReceiverLists(receivers);
+        
+        // Mock responses
+        CreateTransferResponse mockResponse = new CreateTransferResponse();
+        CreateTransferRequestData responseData = new CreateTransferRequestData();
+        List<TransferOrderInfo> orderInfoList = new ArrayList<>();
+        TransferOrderInfo orderInfo = new TransferOrderInfo();
+        orderInfoList.add(orderInfo);
+        responseData.setTransferOrderLists(orderInfoList);
+        mockResponse.setData(responseData);
+        
+        ResponseDetails responseDetails = new ResponseDetails();
+        responseDetails.setResponseCodeNumber(0);
+        mockResponse.setResponseDetails(responseDetails);
+
+        RetrieveTransferLimitResponse limitResponse = createMockTransferLimitResponse();
+        GoldPriceResponse goldPriceResponse = createMockGoldPriceResponse();
+        RuleResponse sreResponse = new RuleResponse();
+
+        when(tradeLimitService.retrieveLimitations(anyMap())).thenReturn(limitResponse);
+        when(restClientService.post(anyString(), anyMap(), any(CreateTransferRequest.class), 
+                eq(CreateTransferResponse.class), anyInt(), anyBoolean())).thenReturn(mockResponse);
+        when(sreValidationService.callSreForTransferValidation(anyString(), anyString(), anyString(), anyMap()))
+                .thenReturn(sreResponse);
+
+        // Act
+        CreateTransferResponse result = tradeTransferService.createTransfers(sourceRequestHeader, request);
+
+        // Assert
+        assertNotNull(result);
+        assertEquals(0, result.getResponseDetails().getResponseCodeNumber());
+        verify(tradeLimitService, times(1)).retrieveLimitations(anyMap());
+        verify(restClientService, times(1)).post(anyString(), anyMap(), any(CreateTransferRequest.class), 
+                eq(CreateTransferResponse.class), anyInt(), anyBoolean());
+    }
+
+    @Test
+    void createTransfers_WithTransferLimitExceeded_ShouldThrowException() {
+        // Arrange
+        CreateTransferRequest request = new CreateTransferRequest();
+        CreateTransferRequestData data = new CreateTransferRequestData();
+        request.setData(data);
+        
+        request.getData().setSenderInvestmentAccountChecksumIdentifier("CHECKSUM123");
+        request.getData().setActionRequestCode(ActionRequestCode.D);
+        
+        List<ReceiverInfo> receivers = new ArrayList<>();
+        ReceiverInfo receiver = new ReceiverInfo();
+        receiver.setTransferQuantity(new BigDecimal("1000.0")); // Large quantity
+        receiver.setReceiverCustomerNumber("RECEIVER123");
+        receivers.add(receiver);
+        request.getData().setReceiverLists(receivers);
+        request.getData().setRequestPriceValue(new BigDecimal("2000.00")); // High price
+        
+        RetrieveTransferLimitResponse limitResponse = createMockTransferLimitResponse();
+        // Set lower limits to trigger exception
+        limitResponse.getData().setAvailableTodayAmount(new BigDecimal("1000.00"));
+        limitResponse.getData().setAvailableMonthToDateAmount(new BigDecimal("5000.00"));
+        limitResponse.getData().setAvailableYearToDateAmount(new BigDecimal("10000.00"));
+
+        when(tradeLimitService.retrieveLimitations(anyMap())).thenReturn(limitResponse);
+
+        // Act & Assert
+        assertThrows(TransferLimitExceededException.class, () -> {
+            tradeTransferService.createTransfers(sourceRequestHeader, request);
+        });
+    }
+
+    @Test
+    void modifyTransfers_AcceptAction_Success() {
+        // Arrange
+        UpdateTransferRequest request = new UpdateTransferRequest();
+        UpdateTransferRequestData data = new UpdateTransferRequestData();
+        request.setData(data);
+        
+        request.getData().setTransferActionCode(TransferActionCode.A);
+        request.getData().setReceiverInvestmentAccountChecksumIdentifier("CHECKSUM123");
+        request.getData().setReceiverCustomerInternalNumber("RECEIVER123");
+        
+        UpdateTransferResponse mockResponse = new UpdateTransferResponse();
+        ResponseDetails responseDetails = new ResponseDetails();
+        responseDetails.setResponseCodeNumber(0);
+        mockResponse.setResponseDetails(responseDetails);
+
+        RuleResponse sreResponse = new RuleResponse();
+        GoldPriceResponse goldPriceResponse = createMockGoldPriceResponse();
+
+        when(restClientService.put(anyString(), anyMap(), any(UpdateTransferRequest.class), 
+                eq(UpdateTransferResponse.class), anyInt(), anyBoolean())).thenReturn(mockResponse);
+        when(sreValidationService.callSreForTransferValidation(anyString(), anyString(), anyString(), anyMap()))
+                .thenReturn(sreResponse);
+
+        // Act
+        UpdateTransferResponse result = tradeTransferService.modifyTransfers(sourceRequestHeader, request);
+
+        // Assert
+        assertNotNull(result);
+        assertEquals(0, result.getResponseDetails().getResponseCodeNumber());
+        verify(restClientService, times(1)).put(anyString(), anyMap(), any(UpdateTransferRequest.class), 
+                eq(UpdateTransferResponse.class), anyInt(), anyBoolean());
+    }
+
+    @Test
+    void modifyTransfers_RejectAction_Success() {
+        // Arrange
+        UpdateTransferRequest request = new UpdateTransferRequest();
+        UpdateTransferRequestData data = new UpdateTransferRequestData();
+        request.setData(data);
+        
+        request.getData().setTransferActionCode(TransferActionCode.R);
+        request.getData().setReceiverCustomerInternalNumber("RECEIVER123");
+        
+        UpdateTransferResponse mockResponse = new UpdateTransferResponse();
+        ResponseDetails responseDetails = new ResponseDetails();
+        responseDetails.setResponseCodeNumber(0);
+        mockResponse.setResponseDetails(responseDetails);
+
+        when(restClientService.put(anyString(), anyMap(), any(UpdateTransferRequest.class), 
+                eq(UpdateTransferResponse.class), anyInt(), anyBoolean())).thenReturn(mockResponse);
+
+        // Act
+        UpdateTransferResponse result = tradeTransferService.modifyTransfers(sourceRequestHeader, request);
+
+        // Assert
+        assertNotNull(result);
+        assertEquals(0, result.getResponseDetails().getResponseCodeNumber());
+        verify(restClientService, times(1)).put(anyString(), anyMap(), any(UpdateTransferRequest.class), 
+                eq(UpdateTransferResponse.class), anyInt(), anyBoolean());
+    }
+
+    @Test
+    void validateTransferLimits_WhenDailyLimitExceeded_ShouldThrowException() {
+        // Arrange
+        BigDecimal totalTranAmount = new BigDecimal("15000.00");
+        RetrieveTransferLimitResponse currentLimit = createMockTransferLimitResponse();
+        currentLimit.getData().setAvailableTodayAmount(new BigDecimal("10000.00"));
+
+        // Act & Assert
+        assertThrows(TransferLimitExceededException.class, () -> {
+            tradeTransferService.validateTransferLimits(totalTranAmount, currentLimit);
+        });
+    }
+
+    @Test
+    void validateTransferLimits_WhenMonthlyLimitExceeded_ShouldThrowException() {
+        // Arrange
+        BigDecimal totalTranAmount = new BigDecimal("60000.00");
+        RetrieveTransferLimitResponse currentLimit = createMockTransferLimitResponse();
+        currentLimit.getData().setAvailableMonthToDateAmount(new BigDecimal("50000.00"));
+
+        // Act & Assert
+        assertThrows(TransferLimitExceededException.class, () -> {
+            tradeTransferService.validateTransferLimits(totalTranAmount, currentLimit);
+        });
+    }
+
+    @Test
+    void validateTransferLimits_WhenYearlyLimitExceeded_ShouldThrowException() {
+        // Arrange
+        BigDecimal totalTranAmount = new BigDecimal("120000.00");
+        RetrieveTransferLimitResponse currentLimit = createMockTransferLimitResponse();
+        currentLimit.getData().setAvailableYearToDateAmount(new BigDecimal("100000.00"));
+
+        // Act & Assert
+        assertThrows(TransferLimitExceededException.class, () -> {
+            tradeTransferService.validateTransferLimits(totalTranAmount, currentLimit);
+        });
+    }
+
+    @Test
+    void validateTransferLimits_WhenAllLimitsAreSufficient_ShouldNotThrowException() {
+        // Arrange
+        BigDecimal totalTranAmount = new BigDecimal("5000.00");
+        RetrieveTransferLimitResponse currentLimit = createMockTransferLimitResponse();
+
+        // Act & Assert
+        assertDoesNotThrow(() -> {
+            tradeTransferService.validateTransferLimits(totalTranAmount, currentLimit);
+        });
+    }
+
+    @Test
+    void extractAccountIdMap_WithValidAccounts_ShouldReturnMap() {
+        // Arrange
+        CustomerAccounts customerAccounts = createMockCustomerAccounts();
+
+        // Act
+        Map<String, String> result = tradeTransferService.extractAccountIdMap(customerAccounts);
+
+        // Assert
+        assertNotNull(result);
+        assertEquals(2, result.size());
+        assertTrue(result.containsKey("CHECKSUM123"));
+        assertTrue(result.containsKey("CHECKSUM456"));
+    }
+
+    @Test
+    void extractAccountIdMap_WithNullAccounts_ShouldReturnEmptyMap() {
+        // Act
+        Map<String, String> result = tradeTransferService.extractAccountIdMap(null);
+
+        // Assert
+        assertNotNull(result);
+        assertTrue(result.isEmpty());
+    }
+
+    @Test
+    void extractAccountIdMap_WithEmptyAccountList_ShouldReturnEmptyMap() {
+        // Arrange
+        CustomerAccounts customerAccounts = new CustomerAccounts();
+        customerAccounts.setInvestmentAccountList(new ArrayList<>());
+
+        // Act
+        Map<String, String> result = tradeTransferService.extractAccountIdMap(customerAccounts);
+
+        // Assert
+        assertNotNull(result);
+        assertTrue(result.isEmpty());
+    }
+
+    @Test
+    void findAccountChecksumForAccountNumber_WhenAccountExists_ShouldReturnChecksum() {
+        // Arrange
+        CustomerAccounts customerAccounts = createMockCustomerAccounts();
+
+        // Act
+        String result = tradeTransferService.findAccountChecksumForAccountNumber(customerAccounts, "123456789");
+
+        // Assert
+        assertEquals("CHECKSUM123", result);
+    }
+
+    @Test
+    void findAccountChecksumForAccountNumber_WhenAccountDoesNotExist_ShouldReturnNull() {
+        // Arrange
+        CustomerAccounts customerAccounts = createMockCustomerAccounts();
+
+        // Act
+        String result = tradeTransferService.findAccountChecksumForAccountNumber(customerAccounts, "999999999");
+
+        // Assert
+        assertNull(result);
+    }
+
+    @Test
+    void maskNamesInResponse_RetrieveTransferListResponseData_ShouldMaskNames() throws Exception {
+        // Arrange
+        RetrieveTransferListResponseData responseData = new RetrieveTransferListResponseData();
+        List<TransferListItemInfo> transferLists = new ArrayList<>();
+
+        // Sender with bank customer
+        TransferListItemInfo senderItem = new TransferListItemInfo();
+        senderItem.setTransferSideCode(TransferSideCode.SENDER);
+        senderItem.setIsReceiverBankCustomer("Y");
+        senderItem.setReceiverCustomerFirstName("Alice");
+        senderItem.setReceiverCustomerMiddleName("Marie");
+        transferLists.add(senderItem);
+
+        // Receiver
+        TransferListItemInfo receiverItem = new TransferListItemInfo();
+        receiverItem.setTransferSideCode(TransferSideCode.RECEIVER);
+        receiverItem.setSenderCustomerFirstName("Bob");
+        receiverItem.setSenderCustomerMiddleName("James");
+        transferLists.add(receiverItem);
+
+        responseData.setTransferLists(transferLists);
+
+        // Act
+        tradeTransferService.maskNamesInResponse(responseData);
+
+        // Assert
+        assertEquals("A****e", responseData.getTransferLists().get(0).getReceiverCustomerFirstName());
+        assertEquals("M****e", responseData.getTransferLists().get(0).getReceiverCustomerMiddleName());
+        assertEquals("B***b", responseData.getTransferLists().get(1).getSenderCustomerFirstName());
+        assertEquals("J****s", responseData.getTransferLists().get(1).getSenderCustomerMiddleName());
+    }
+
+    @Test
+    void maskNamesInResponse_RetrieveTransferDetailResponseData_ShouldMaskNames() {
+        // Arrange
+        RetrieveTransferDetailResponseData responseData = new RetrieveTransferDetailResponseData();
+        responseData.setTransferSideCode(TransferSideCode.SENDER);
+        responseData.setIsReceiverBankCustomer("Y");
+        responseData.setReceiverCustomerFirstName("Alice");
+        responseData.setReceiverCustomerMiddleName("Marie");
+
+        // Act
+        tradeTransferService.maskNamesInResponse(responseData);
+
+        // Assert
+        assertEquals("A****e", responseData.getReceiverCustomerFirstName());
+        assertEquals("M****e", responseData.getReceiverCustomerMiddleName());
+    }
+
+    @Test
+    void maskFirstNameAndMiddleName_WithValidNames_ShouldMaskCorrectly() throws Exception {
+        // Arrange
+        TestNameObject testObject = new TestNameObject();
+        testObject.setFirstName("Jonathan");
+        testObject.setMiddleName("Michael");
+
+        // Act
+        Method method = TradeTransferServiceImpl.class.getDeclaredMethod("maskFirstNameAndMiddleName", 
+                Object.class, String.class, String.class);
+        method.setAccessible(true);
+        method.invoke(tradeTransferService, testObject, "firstName", "middleName");
+
+        // Assert
+        assertEquals("J*******n", testObject.getFirstName());
+        assertEquals("M******l", testObject.getMiddleName());
+    }
+
+    @Test
+    void maskFirstNameAndMiddleName_WithNullNames_ShouldHandleGracefully() throws Exception {
+        // Arrange
+        TestNameObject testObject = new TestNameObject();
+        testObject.setFirstName(null);
+        testObject.setMiddleName("");
+
+        // Act
+        Method method = TradeTransferServiceImpl.class.getDeclaredMethod("maskFirstNameAndMiddleName", 
+                Object.class, String.class, String.class);
+        method.setAccessible(true);
+        method.invoke(tradeTransferService, testObject, "firstName", "middleName");
+
+        // Assert
+        assertNull(testObject.getFirstName());
+        assertEquals("", testObject.getMiddleName());
+    }
+
+    // Helper class for testing reflection-based masking
+    static class TestNameObject {
+        private String firstName;
+        private String middleName;
+
+        public String getFirstName() { return firstName; }
+        public void setFirstName(String firstName) { this.firstName = firstName; }
+        public String getMiddleName() { return middleName; }
+        public void setMiddleName(String middleName) { this.middleName = middleName; }
+    }
+
+    @Test
+    void capitalize_WithValidString_ShouldCapitalizeFirstLetter() throws Exception {
+        // Arrange
+        Method method = TradeTransferServiceImpl.class.getDeclaredMethod("capitalize", String.class);
+        method.setAccessible(true);
+
+        // Act & Assert
+        assertEquals("FirstName", method.invoke(tradeTransferService, "firstName"));
+        assertEquals("MiddleName", method.invoke(tradeTransferService, "middleName"));
+        assertEquals("", method.invoke(tradeTransferService, ""));
+        assertNull(method.invoke(tradeTransferService, new Object[]{null}));
+    }
+}
