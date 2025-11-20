@@ -632,4 +632,355 @@ class TradeTransferServiceImplTest {
         assertEquals("", method.invoke(tradeTransferService, ""));
         assertNull(method.invoke(tradeTransferService, new Object[]{null}));
     }
+
+@Test
+void modifyTransfers_AcceptAction_WithValidAccountId_ShouldSuccess() {
+    // Arrange
+    UpdateTransferRequest request = new UpdateTransferRequest();
+    UpdateTransferRequestData data = new UpdateTransferRequestData();
+    request.setData(data);
+    
+    request.getData().setTransferActionCode(TransferActionCode.A);
+    request.getData().setReceiverInvestmentAccountChecksumIdentifier("CHECKSUM123");
+    request.getData().setReceiverCustomerInternalNumber("RECEIVER123");
+    
+    UpdateTransferResponse mockResponse = new UpdateTransferResponse();
+    ResponseDetails responseDetails = new ResponseDetails();
+    responseDetails.setResponseCodeNumber(0);
+    mockResponse.setResponseDetails(responseDetails);
+
+    // Mock account ID retrieval
+    RetrieveCustomerAccountsIdListResponse accountResponse = new RetrieveCustomerAccountsIdListResponse();
+    InvestmentAccountIdList accountIdList = new InvestmentAccountIdList();
+    InvestmentAccountId accountId = new InvestmentAccountId();
+    accountId.setCountryAccountCode("HK");
+    accountId.setGroupMemberAccountCode("HBAP");
+    accountId.setAccountNumber("123456789");
+    accountId.setAccountProductTypeCode("SAV");
+    accountId.setAccountTypeCode("01");
+    accountId.setAccountCurrencyCode("HKD");
+    accountIdList.setAccountId(accountId);
+    accountResponse.setAccountIdList(Arrays.asList(accountIdList));
+
+    RuleResponse sreResponse = new RuleResponse();
+    GoldPriceResponse goldPriceResponse = createMockGoldPriceResponse();
+
+    when(restClientService.get(contains("customer-accounts"), anyMap(), 
+            eq(RetrieveCustomerAccountsIdListResponse.class), anyInt(), anyBoolean()))
+            .thenReturn(accountResponse);
+    when(restClientService.put(anyString(), anyMap(), any(UpdateTransferRequest.class), 
+            eq(UpdateTransferResponse.class), anyInt(), anyBoolean())).thenReturn(mockResponse);
+    when(sreValidationService.callSreForTransferValidation(anyString(), anyString(), anyString(), anyMap()))
+            .thenReturn(sreResponse);
+
+    // Act
+    UpdateTransferResponse result = tradeTransferService.modifyTransfers(sourceRequestHeader, request);
+
+    // Assert
+    assertNotNull(result);
+    assertEquals(0, result.getResponseDetails().getResponseCodeNumber());
+    verify(restClientService, times(1)).put(anyString(), anyMap(), any(UpdateTransferRequest.class), 
+            eq(UpdateTransferResponse.class), anyInt(), anyBoolean());
+    
+    // Verify account ID was set in the request
+    assertNotNull(request.getData().getReceiverInvestmentAccount());
+}
+
+@Test
+void modifyTransfers_AcceptAction_WithNullAccountResponse_ShouldThrowException() {
+    // Arrange
+    UpdateTransferRequest request = new UpdateTransferRequest();
+    UpdateTransferRequestData data = new UpdateTransferRequestData();
+    request.setData(data);
+    
+    request.getData().setTransferActionCode(TransferActionCode.A);
+    request.getData().setReceiverInvestmentAccountChecksumIdentifier("CHECKSUM123");
+    request.getData().setReceiverCustomerInternalNumber("RECEIVER123");
+
+    // Mock null account response
+    when(restClientService.get(contains("customer-accounts"), anyMap(), 
+            eq(RetrieveCustomerAccountsIdListResponse.class), anyInt(), anyBoolean()))
+            .thenReturn(null);
+
+    // Act & Assert
+    assertThrows(BadRequestException.class, () -> {
+        tradeTransferService.modifyTransfers(sourceRequestHeader, request);
+    });
+}
+
+@Test
+void modifyTransfers_AcceptAction_WithEmptyAccountIdList_ShouldThrowException() {
+    // Arrange
+    UpdateTransferRequest request = new UpdateTransferRequest();
+    UpdateTransferRequestData data = new UpdateTransferRequestData();
+    request.setData(data);
+    
+    request.getData().setTransferActionCode(TransferActionCode.A);
+    request.getData().setReceiverInvestmentAccountChecksumIdentifier("CHECKSUM123");
+    request.getData().setReceiverCustomerInternalNumber("RECEIVER123");
+
+    // Mock empty account ID list
+    RetrieveCustomerAccountsIdListResponse accountResponse = new RetrieveCustomerAccountsIdListResponse();
+    accountResponse.setAccountIdList(Collections.emptyList());
+
+    when(restClientService.get(contains("customer-accounts"), anyMap(), 
+            eq(RetrieveCustomerAccountsIdListResponse.class), anyInt(), anyBoolean()))
+            .thenReturn(accountResponse);
+
+    // Act & Assert
+    assertThrows(BadRequestException.class, () -> {
+        tradeTransferService.modifyTransfers(sourceRequestHeader, request);
+    });
+}
+
+@Test
+void modifyTransfers_AcceptAction_WithNullAccountIdList_ShouldThrowException() {
+    // Arrange
+    UpdateTransferRequest request = new UpdateTransferRequest();
+    UpdateTransferRequestData data = new UpdateTransferRequestData();
+    request.setData(data);
+    
+    request.getData().setTransferActionCode(TransferActionCode.A);
+    request.getData().setReceiverInvestmentAccountChecksumIdentifier("CHECKSUM123");
+    request.getData().setReceiverCustomerInternalNumber("RECEIVER123");
+
+    // Mock null account ID list
+    RetrieveCustomerAccountsIdListResponse accountResponse = new RetrieveCustomerAccountsIdListResponse();
+    accountResponse.setAccountIdList(null);
+
+    when(restClientService.get(contains("customer-accounts"), anyMap(), 
+            eq(RetrieveCustomerAccountsIdListResponse.class), anyInt(), anyBoolean()))
+            .thenReturn(accountResponse);
+
+    // Act & Assert
+    assertThrows(BadRequestException.class, () -> {
+        tradeTransferService.modifyTransfers(sourceRequestHeader, request);
+    });
+}
+
+@Test
+void modifyTransfers_AcceptAction_WithSreValidationFailure_ShouldThrowException() {
+    // Arrange
+    UpdateTransferRequest request = new UpdateTransferRequest();
+    UpdateTransferRequestData data = new UpdateTransferRequestData();
+    request.setData(data);
+    
+    request.getData().setTransferActionCode(TransferActionCode.A);
+    request.getData().setReceiverInvestmentAccountChecksumIdentifier("CHECKSUM123");
+    request.getData().setReceiverCustomerInternalNumber("RECEIVER123");
+
+    // Mock account ID retrieval
+    RetrieveCustomerAccountsIdListResponse accountResponse = new RetrieveCustomerAccountsIdListResponse();
+    InvestmentAccountIdList accountIdList = new InvestmentAccountIdList();
+    InvestmentAccountId accountId = new InvestmentAccountId();
+    accountId.setCountryAccountCode("HK");
+    accountId.setGroupMemberAccountCode("HBAP");
+    accountId.setAccountNumber("123456789");
+    accountIdList.setAccountId(accountId);
+    accountResponse.setAccountIdList(Arrays.asList(accountIdList));
+
+    // Mock SRE validation failure
+    RuleResponse sreResponse = new RuleResponse();
+    ResponseDetails sreResponseDetails = new ResponseDetails();
+    sreResponseDetails.setResponseCodeNumber(1); // Non-zero indicates failure
+    sreResponse.setResponseDetails(sreResponseDetails);
+
+    when(restClientService.get(contains("customer-accounts"), anyMap(), 
+            eq(RetrieveCustomerAccountsIdListResponse.class), anyInt(), anyBoolean()))
+            .thenReturn(accountResponse);
+    when(sreValidationService.callSreForTransferValidation(anyString(), anyString(), anyString(), anyMap()))
+            .thenReturn(sreResponse);
+    doThrow(new BadRequestException("SRE validation failed"))
+            .when(sreValidationService).handleSreValidateResponse(sreResponse);
+
+    // Act & Assert
+    assertThrows(BadRequestException.class, () -> {
+        tradeTransferService.modifyTransfers(sourceRequestHeader, request);
+    });
+}
+
+@Test
+void modifyTransfers_AcceptAction_WithGoldPriceRetrievalFailure_ShouldLogError() {
+    // Arrange
+    UpdateTransferRequest request = new UpdateTransferRequest();
+    UpdateTransferRequestData data = new UpdateTransferRequestData();
+    request.setData(data);
+    
+    request.getData().setTransferActionCode(TransferActionCode.A);
+    request.getData().setReceiverInvestmentAccountChecksumIdentifier("CHECKSUM123");
+    request.getData().setReceiverCustomerInternalNumber("RECEIVER123");
+
+    // Mock account ID retrieval
+    RetrieveCustomerAccountsIdListResponse accountResponse = new RetrieveCustomerAccountsIdListResponse();
+    InvestmentAccountIdList accountIdList = new InvestmentAccountIdList();
+    InvestmentAccountId accountId = new InvestmentAccountId();
+    accountId.setCountryAccountCode("HK");
+    accountId.setGroupMemberAccountCode("HBAP");
+    accountId.setAccountNumber("123456789");
+    accountIdList.setAccountId(accountId);
+    accountResponse.setAccountIdList(Arrays.asList(accountIdList));
+
+    UpdateTransferResponse mockResponse = new UpdateTransferResponse();
+    ResponseDetails responseDetails = new ResponseDetails();
+    responseDetails.setResponseCodeNumber(0);
+    mockResponse.setResponseDetails(responseDetails);
+
+    RuleResponse sreResponse = new RuleResponse();
+
+    // Mock gold price retrieval to return null
+    when(restClientService.get(contains("customer-accounts"), anyMap(), 
+            eq(RetrieveCustomerAccountsIdListResponse.class), anyInt(), anyBoolean()))
+            .thenReturn(accountResponse);
+    when(restClientService.get(contains("mds"), anyMap(), 
+            eq(GoldPriceResponse.class), anyInt(), anyBoolean()))
+            .thenReturn(null); // Gold price retrieval fails
+    when(restClientService.put(anyString(), anyMap(), any(UpdateTransferRequest.class), 
+            eq(UpdateTransferResponse.class), anyInt(), anyBoolean())).thenReturn(mockResponse);
+    when(sreValidationService.callSreForTransferValidation(anyString(), anyString(), anyString(), anyMap()))
+            .thenReturn(sreResponse);
+
+    // Act
+    UpdateTransferResponse result = tradeTransferService.modifyTransfers(sourceRequestHeader, request);
+
+    // Assert
+    assertNotNull(result);
+    assertEquals(0, result.getResponseDetails().getResponseCodeNumber());
+    // Verify that the method continues even when gold price retrieval fails
+    verify(restClientService, times(1)).put(anyString(), anyMap(), any(UpdateTransferRequest.class), 
+            eq(UpdateTransferResponse.class), anyInt(), anyBoolean());
+}
+
+@Test
+void modifyTransfers_AcceptAction_WithGoldPriceDataNull_ShouldLogError() {
+    // Arrange
+    UpdateTransferRequest request = new UpdateTransferRequest();
+    UpdateTransferRequestData data = new UpdateTransferRequestData();
+    request.setData(data);
+    
+    request.getData().setTransferActionCode(TransferActionCode.A);
+    request.getData().setReceiverInvestmentAccountChecksumIdentifier("CHECKSUM123");
+    request.getData().setReceiverCustomerInternalNumber("RECEIVER123");
+
+    // Mock account ID retrieval
+    RetrieveCustomerAccountsIdListResponse accountResponse = new RetrieveCustomerAccountsIdListResponse();
+    InvestmentAccountIdList accountIdList = new InvestmentAccountIdList();
+    InvestmentAccountId accountId = new InvestmentAccountId();
+    accountId.setCountryAccountCode("HK");
+    accountId.setGroupMemberAccountCode("HBAP");
+    accountId.setAccountNumber("123456789");
+    accountIdList.setAccountId(accountId);
+    accountResponse.setAccountIdList(Arrays.asList(accountIdList));
+
+    UpdateTransferResponse mockResponse = new UpdateTransferResponse();
+    ResponseDetails responseDetails = new ResponseDetails();
+    responseDetails.setResponseCodeNumber(0);
+    mockResponse.setResponseDetails(responseDetails);
+
+    RuleResponse sreResponse = new RuleResponse();
+
+    // Mock gold price response with null data
+    GoldPriceResponse goldPriceResponse = new GoldPriceResponse();
+    goldPriceResponse.setData(null); // Data is null
+
+    when(restClientService.get(contains("customer-accounts"), anyMap(), 
+            eq(RetrieveCustomerAccountsIdListResponse.class), anyInt(), anyBoolean()))
+            .thenReturn(accountResponse);
+    when(restClientService.get(contains("mds"), anyMap(), 
+            eq(GoldPriceResponse.class), anyInt(), anyBoolean()))
+            .thenReturn(goldPriceResponse);
+    when(restClientService.put(anyString(), anyMap(), any(UpdateTransferRequest.class), 
+            eq(UpdateTransferResponse.class), anyInt(), anyBoolean())).thenReturn(mockResponse);
+    when(sreValidationService.callSreForTransferValidation(anyString(), anyString(), anyString(), anyMap()))
+            .thenReturn(sreResponse);
+
+    // Act
+    UpdateTransferResponse result = tradeTransferService.modifyTransfers(sourceRequestHeader, request);
+
+    // Assert
+    assertNotNull(result);
+    assertEquals(0, result.getResponseDetails().getResponseCodeNumber());
+    // Verify that the method continues even when gold price data is null
+    verify(restClientService, times(1)).put(anyString(), anyMap(), any(UpdateTransferRequest.class), 
+            eq(UpdateTransferResponse.class), anyInt(), anyBoolean());
+}
+
+@Test
+void retrieveAccountIdWithCheckSum_WithValidResponse_ShouldReturnAccountId() throws Exception {
+    // Arrange
+    String checksum = "CHECKSUM123";
+    Map<String, String> headers = new HashMap<>(sourceRequestHeader);
+    headers.put("CHECKSUM", checksum);
+
+    RetrieveCustomerAccountsIdListResponse accountResponse = new RetrieveCustomerAccountsIdListResponse();
+    InvestmentAccountIdList accountIdList = new InvestmentAccountIdList();
+    InvestmentAccountId accountId = new InvestmentAccountId();
+    accountId.setCountryAccountCode("HK");
+    accountId.setGroupMemberAccountCode("HBAP");
+    accountId.setAccountNumber("123456789");
+    accountId.setAccountProductTypeCode("SAV");
+    accountId.setAccountTypeCode("01");
+    accountId.setAccountCurrencyCode("HKD");
+    accountIdList.setAccountId(accountId);
+    accountResponse.setAccountIdList(Arrays.asList(accountIdList));
+
+    when(restClientService.get(contains("customer-accounts"), anyMap(), 
+            eq(RetrieveCustomerAccountsIdListResponse.class), anyInt(), anyBoolean()))
+            .thenReturn(accountResponse);
+
+    // Use reflection to access private method
+    Method method = TradeTransferServiceImpl.class.getDeclaredMethod("retrieveAccountIdWithCheckSum", Map.class);
+    method.setAccessible(true);
+
+    // Act
+    AccountId result = (AccountId) method.invoke(tradeTransferService, headers);
+
+    // Assert
+    assertNotNull(result);
+    assertEquals("HK", result.getCountryAccountCode());
+    assertEquals("HBAP", result.getGroupMemberAccountCode());
+    assertEquals("123456789", result.getAccountNumber());
+}
+
+@Test
+void retrieveAccountIdWithCheckSum_WithNullResponse_ShouldThrowException() throws Exception {
+    // Arrange
+    Map<String, String> headers = new HashMap<>(sourceRequestHeader);
+    headers.put("CHECKSUM", "CHECKSUM123");
+
+    when(restClientService.get(contains("customer-accounts"), anyMap(), 
+            eq(RetrieveCustomerAccountsIdListResponse.class), anyInt(), anyBoolean()))
+            .thenReturn(null);
+
+    // Use reflection to access private method
+    Method method = TradeTransferServiceImpl.class.getDeclaredMethod("retrieveAccountIdWithCheckSum", Map.class);
+    method.setAccessible(true);
+
+    // Act & Assert
+    assertThrows(InvocationTargetException.class, () -> {
+        method.invoke(tradeTransferService, headers);
+    });
+}
+
+@Test
+void retrieveAccountIdWithCheckSum_WithEmptyAccountIdList_ShouldThrowException() throws Exception {
+    // Arrange
+    Map<String, String> headers = new HashMap<>(sourceRequestHeader);
+    headers.put("CHECKSUM", "CHECKSUM123");
+
+    RetrieveCustomerAccountsIdListResponse accountResponse = new RetrieveCustomerAccountsIdListResponse();
+    accountResponse.setAccountIdList(Collections.emptyList());
+
+    when(restClientService.get(contains("customer-accounts"), anyMap(), 
+            eq(RetrieveCustomerAccountsIdListResponse.class), anyInt(), anyBoolean()))
+            .thenReturn(accountResponse);
+
+    // Use reflection to access private method
+    Method method = TradeTransferServiceImpl.class.getDeclaredMethod("retrieveAccountIdWithCheckSum", Map.class);
+    method.setAccessible(true);
+
+    // Act & Assert
+    assertThrows(InvocationTargetException.class, () -> {
+        method.invoke(tradeTransferService, headers);
+    });
+}
 }
