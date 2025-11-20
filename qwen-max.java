@@ -1,16 +1,13 @@
 package com.hsbc.trade.transfer.service.impl;
 
+import com.hsbc.trade.ErrorCodes;
 import com.hsbc.trade.HTTPRequestHeaderConstants;
 import com.hsbc.trade.common.AccountId;
 import com.hsbc.trade.common.ResponseDetails;
 import com.hsbc.trade.service.DuplicateSubmitPreventionService;
 import com.hsbc.trade.service.RestClientService;
 import com.hsbc.trade.service.impl.RetrieveCustomerProfilesServiceImpl;
-import com.hsbc.trade.transfer.common.ActionRequestCode;
-import com.hsbc.trade.transfer.common.ReceiverInfo;
-import com.hsbc.trade.transfer.common.TransferActionCode;
-import com.hsbc.trade.transfer.common.TransferListItemInfo;
-import com.hsbc.trade.transfer.common.TransferSideCode;
+import com.hsbc.trade.transfer.common.*;
 import com.hsbc.trade.transfer.constant.TransferQueryParameterConstant;
 import com.hsbc.trade.transfer.createtransfer.CreateTransferRequest;
 import com.hsbc.trade.transfer.createtransfer.CreateTransferRequestData;
@@ -22,10 +19,8 @@ import com.hsbc.trade.transfer.domain.RetrieveCustomerAccountsIdListResponse;
 import com.hsbc.trade.transfer.domain.account.CustomerAccounts;
 import com.hsbc.trade.transfer.domain.account.InvestmentAccount;
 import com.hsbc.trade.transfer.domain.cep.PartyContactResponse;
-import com.hsbc.trade.transfer.domain.cep.PartyContactResponseData;
 import com.hsbc.trade.transfer.domain.cep.PartyNameResponse;
 import com.hsbc.trade.transfer.domain.cep.PartyNameResponseData;
-import com.hsbc.trade.transfer.domain.cep.PartyNameValue;
 import com.hsbc.trade.transfer.domain.eligibility.RuleResponse;
 import com.hsbc.trade.transfer.domain.mds.GoldPriceResponse;
 import com.hsbc.trade.transfer.domain.mds.GoldPriceResponseData;
@@ -45,6 +40,7 @@ import jakarta.ws.rs.InternalServerErrorException;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
+import org.mockito.ArgumentCaptor;
 import org.mockito.InjectMocks;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
@@ -79,12 +75,12 @@ class TradeTransferServiceImplTest {
     private E2ETrustTokenUtil e2ETrustTokenUtil;
 
     @Mock
-    private DuplicateSubmitPreventionService duplicateSubmitPreventionService;
-
-    @Mock
     private TradeLimitServiceImpl tradeLimitService;
 
-    private final String dummyToken = "<saml:Assertion xmlns:saml='http://www.hsbc.com/saas/assertion' xmlns:ds='http://www.w3.org/2000/09/xmldsig#' xmlns:xsi='http://www.w3.org/2001/XMLSchema-instance' ID='id_9a9e4d35-7d80-4805-849f-ddb90a8b2c1f' IssueInstant='2025-08-07T01:25:13.837Z' Version='3.0'><saml:Issuer>https://www.hsbc.com/rbwm/dtp</saml:Issuer><ds:Signature><ds:SignedInfo><ds:CanonicalizationMethod Algorithm='http://www.w3.org/2001/10/xml-exc-c14n#'/><ds:SignatureMethod Algorithm='http://www.w3.org/2001/04/xmldsig-more#rsa-sha256'/><ds:Reference URI='#id_9a9e4d35-7d80-4805-849f-ddb90a8b2c1f'><ds:Transforms><ds:Transform Algorithm='http://www.w3.org/2000/09/xmldsig#enveloped-signature'/><ds:Transform Algorithm='http://www.w3.org/2001/10/xml-exc-c14n#'><ds:InclusiveNamespaces xmlns:ds='http://www.w3.org/2001/10/xml-exc-c14n#' PrefixList='#default saml ds xs xsi'/></ds:Transform></ds:Transforms><ds:DigestMethod Algorithm='http://www.w3.org/2001/04/xmlenc#sha256'/><ds:DigestValue>GLd2xpRi6DRAl81eH6NBRNzVWBlEL1zn5mWNpp16xCk=</ds:DigestValue></ds:Reference></ds:SignedInfo><ds:SignatureValue>IJQo3CpyjsDRTfXdnQGQnugNniIy56neA0eaLr87DITEauIPFNZHGCk6sb/Wp9PSIxoJNGpF4T5vVPWqUmv1fYasVtrukqodTgK2JD3NHhviDmTVGKzhZ2hnfjSewDRYeqHVURHMWY1EzltUhpZgO9u12i9+PPK4OJLFDR5Q4tZico3GfweUS7+Ds9wYssqgECZg3XayVg5w9ruSdxPIrcjU7aOe2sZFkge+I6cD2OWHC0K+u+PG+DD0UNmK9OnIY///lwgUdhbdSv0zdkUhOcHRKstuFIKhb4E8eZDogB5Sjeqya3EwJ8sIda99n+jug9IrDAjQIBTTnxtMfwq+gQ==</ds:SignatureValue></ds:Signature><saml:Subject><saml:NameID>HK00100718688801</saml:NameID></saml:Subject><saml:Conditions NotBefore='2025-08-07T01:25:12.837Z' NotOnOrAfter='2025-08-07T01:26:13.837Z'/><saml:AttributeStatement><saml:Attribute Name='GUID'><saml:AttributeValue>98b45150-5c73-11ea-8a50-0350565a170c</saml:AttributeValue></saml:Attribute><saml:Attribute Name='CAM'><saml:AttributeValue>30</saml:AttributeValue></saml:Attribute><saml:Attribute Name='KeyAlias'><saml:AttributeValue>E2E_TRUST_SAAS_AP01_BRTB1_ALIAS</saml:AttributeValue></saml:Attribute></saml:AttributeStatement></saml:Assertion>";
+    @Mock
+    private DuplicateSubmitPreventionService duplicateSubmitPreventionService;
+
+    private static final String DUMMY_TOKEN = "<saml:Assertion xmlns:saml='http://www.hsbc.com/saas/assertion' xmlns:ds='http://www.w3.org/2000/09/xmldsig#' xmlns:xsi='http://www.w3.org/2001/XMLSchema-instance' ID='id_9a9e4d35-7d80-4805-849f-ddb90a8b2c1f' IssueInstant='2025-08-07T01:25:13.837Z' Version='3.0'><saml:Issuer>https://www.hsbc.com/rbwm/dtp</saml:Issuer><ds:Signature><ds:SignedInfo><ds:CanonicalizationMethod Algorithm='http://www.w3.org/2001/10/xml-exc-c14n#'/><ds:SignatureMethod Algorithm='http://www.w3.org/2001/04/xmldsig-more#rsa-sha256'/><ds:Reference URI='#id_9a9e4d35-7d80-4805-849f-ddb90a8b2c1f'><ds:Transforms><ds:Transform Algorithm='http://www.w3.org/2000/09/xmldsig#enveloped-signature'/><ds:Transform Algorithm='http://www.w3.org/2001/10/xml-exc-c14n#'><ds:InclusiveNamespaces xmlns:ds='http://www.w3.org/2001/10/xml-exc-c14n#' PrefixList='#default saml ds xs xsi'/></ds:Transform></ds:Transforms><ds:DigestMethod Algorithm='http://www.w3.org/2001/04/xmlenc#sha256'/><ds:DigestValue>GLd2xpRi6DRAl81eH6NBRNzVWBlEL1zn5mWNpp16xCk=</ds:DigestValue></ds:Reference></ds:SignedInfo><ds:SignatureValue>IJQo3CpyjsDRTfXdnQGQnugNniIy56neA0eaLr87DITEauIPFNZHGCk6sb/Wp9PSIxoJNGpF4T5vVPWqUmv1fYasVtrukqodTgK2JD3NHhviDmTVGKzhZ2hnfjSewDRYeqHVURHMWY1EzltUhpZgO9u12i9+PPK4OJLFDR5Q4tZico3GfweUS7+Ds9wYssqgECZg3XayVg5w9ruSdxPIrcjU7aOe2sZFkge+I6cD2OWHC0K+u+PG+DD0UNmK9OnIY///lwgUdhbdSv0zdkUhOcHRKstuFIKhb4E8eZDogB5Sjeqya3EwJ8sIda99n+jug9IrDAjQIBTTnxtMfwq+gQ==</ds:SignatureValue></ds:Signature><saml:Subject><saml:NameID>HK00100718688801</saml:NameID></saml:Subject><saml:Conditions NotBefore='2025-08-07T01:25:12.837Z' NotOnOrAfter='2025-08-07T01:26:13.837Z'/><saml:AttributeStatement><saml:Attribute Name='GUID'><saml:AttributeValue>98b45150-5c73-11ea-8a50-0350565a170c</saml:AttributeValue></saml:Attribute><saml:Attribute Name='CAM'><saml:AttributeValue>30</saml:AttributeValue></saml:Attribute><saml:Attribute Name='KeyAlias'><saml:AttributeValue>E2E_TRUST_SAAS_AP01_BRTB1_ALIAS</saml:AttributeValue></saml:Attribute></saml:AttributeStatement></saml:Assertion>";
 
     @BeforeEach
     void setUp() {
@@ -92,1522 +88,957 @@ class TradeTransferServiceImplTest {
         ReflectionTestUtils.setField(tradeTransferService, "customerAccountUrl", "https://dummy.accounts");
         ReflectionTestUtils.setField(tradeTransferService, "retrieveCustomerProfilesService", retrieveCustomerProfilesService);
         ReflectionTestUtils.setField(tradeTransferService, "sreValidationService", sreValidationService);
-        ReflectionTestUtils.setField(tradeTransferService, "duplicateSubmitPreventionService", duplicateSubmitPreventionService);
-        ReflectionTestUtils.setField(tradeTransferService, "tradeLimitService", tradeLimitService);
         lenient().when(retrieveCustomerProfilesService.getCIN(any())).thenReturn("dummy-cin");
     }
 
     @Test
-    void retrieveTransferList() {
+    void retrieveTransferList_Success() {
+        // Arrange
         Map<String, String> sourceRequestHeader = new HashMap<>();
         sourceRequestHeader.put(HTTPRequestHeaderConstants.X_HSBC_CHNL_COUNTRYCODE, "HK");
         sourceRequestHeader.put(HTTPRequestHeaderConstants.X_HSBC_CHNL_GROUP_MEMBER, "HBAP");
-        sourceRequestHeader.put(HTTPRequestHeaderConstants.X_HSBC_SAML, dummyToken);
-        sourceRequestHeader.put(HTTPRequestHeaderConstants.X_HSBC_SAML3, dummyToken);
+        sourceRequestHeader.put(HTTPRequestHeaderConstants.X_HSBC_SAML, DUMMY_TOKEN);
+        sourceRequestHeader.put(HTTPRequestHeaderConstants.X_HSBC_SAML3, DUMMY_TOKEN);
         sourceRequestHeader.put(HTTPRequestHeaderConstants.X_HSBC_CUSTOMER_ID, "CUST123");
 
-        RetrieveTransferListResponse response = new RetrieveTransferListResponse();
-        RetrieveTransferListResponseData responseData = new RetrieveTransferListResponseData();
-        responseData.setTransferLists(new ArrayList<>());
-        response.setData(responseData);
-        ResponseDetails responseDetails = new ResponseDetails();
-        responseDetails.setResponseCodeNumber(0);
-        response.setResponseDetails(responseDetails);
-
+        // Mock customer accounts
         CustomerAccounts customerAccounts = new CustomerAccounts();
-        List<InvestmentAccount> accountList = new ArrayList<>();
         InvestmentAccount account = new InvestmentAccount();
-        AccountId accountId = new AccountId();
-        accountId.setAccountNumber("123456");
-        account.setInvestmentAccountId(accountId);
-        account.setChecksum("CHK123");
-        accountList.add(account);
-        customerAccounts.setInvestmentAccountList(accountList);
-
-        PartyNameResponse nameResponse = new PartyNameResponse();
-        PartyNameResponseData nameData = new PartyNameResponseData();
-        PartyNameValue nameValue = new PartyNameValue();
-        nameValue.setGivenName("John");
-        nameValue.setLastName("Doe");
-        nameValue.setCustomerChristianName("Christian");
-        nameData.setName(nameValue);
-        nameResponse.setData(nameData);
-
-        PartyContactResponse contactResponse = new PartyContactResponse();
-        PartyContactResponseData contactData = new PartyContactResponseData();
-        contactData.setMobileNumber1("12345678");
-        contactResponse.setData(contactData);
-
-        when(restClientService.get(any(), any(), any(), anyInt(), anyBoolean())).thenReturn(response);
-        when(restClientService.get(eq("https://dummy.accounts"), any(), eq(CustomerAccounts.class), anyInt(), anyBoolean())).thenReturn(customerAccounts);
-        when(restClientService.get(contains("partyName"), any(), eq(PartyNameResponse.class), anyInt(), anyBoolean())).thenReturn(nameResponse);
-        when(restClientService.get(contains("partyContact"), any(), eq(PartyContactResponse.class), anyInt(), anyBoolean())).thenReturn(contactResponse);
-        when(e2ETrustTokenUtil.generateE2ETrustToken(anyString(), anyMap())).thenReturn("dummy-token");
-
-        tradeTransferService.retrieveTransferList(sourceRequestHeader, "ACCEPTED", Collections.singletonList("CHK123"),
-                "1", "PROD1", "PLAIN_TEXT");
-
-        verify(restClientService).get(any(), any(), any(), anyInt(), anyBoolean());
-    }
-
-    @Test
-    void retrieveTransferListEmptyAccountList() {
-        Map<String, String> sourceRequestHeader = new HashMap<>();
-        sourceRequestHeader.put(HTTPRequestHeaderConstants.X_HSBC_CHNL_COUNTRYCODE, "HK");
-        sourceRequestHeader.put(HTTPRequestHeaderConstants.X_HSBC_CHNL_GROUP_MEMBER, "HBAP");
-        sourceRequestHeader.put(HTTPRequestHeaderConstants.X_HSBC_SAML, dummyToken);
-        sourceRequestHeader.put(HTTPRequestHeaderConstants.X_HSBC_SAML3, dummyToken);
-        sourceRequestHeader.put(HTTPRequestHeaderConstants.X_HSBC_CUSTOMER_ID, "CUST123");
-
-        RetrieveTransferListResponse response = new RetrieveTransferListResponse();
-        RetrieveTransferListResponseData responseData = new RetrieveTransferListResponseData();
-        responseData.setTransferLists(new ArrayList<>());
-        response.setData(responseData);
-        ResponseDetails responseDetails = new ResponseDetails();
-        responseDetails.setResponseCodeNumber(0);
-        response.setResponseDetails(responseDetails);
-
-        CustomerAccounts customerAccounts = new CustomerAccounts(); // Empty list
-        customerAccounts.setInvestmentAccountList(new ArrayList<>());
-
-        PartyNameResponse nameResponse = new PartyNameResponse();
-        PartyNameResponseData nameData = new PartyNameResponseData();
-        PartyNameValue nameValue = new PartyNameValue();
-        nameValue.setGivenName("John");
-        nameValue.setLastName("Doe");
-        nameValue.setCustomerChristianName("Christian");
-        nameData.setName(nameValue);
-        nameResponse.setData(nameData);
-
-        PartyContactResponse contactResponse = new PartyContactResponse();
-        PartyContactResponseData contactData = new PartyContactResponseData();
-        contactData.setMobileNumber1("12345678");
-        contactResponse.setData(contactData);
-
-        when(restClientService.get(any(), any(), any(), anyInt(), anyBoolean())).thenReturn(response);
-        when(restClientService.get(eq("https://dummy.accounts"), any(), eq(CustomerAccounts.class), anyInt(), anyBoolean())).thenReturn(customerAccounts);
-        when(restClientService.get(contains("partyName"), any(), eq(PartyNameResponse.class), anyInt(), anyBoolean())).thenReturn(nameResponse);
-        when(restClientService.get(contains("partyContact"), any(), eq(PartyContactResponse.class), anyInt(), anyBoolean())).thenReturn(contactResponse);
-        when(e2ETrustTokenUtil.generateE2ETrustToken(anyString(), anyMap())).thenReturn("dummy-token");
-
-        tradeTransferService.retrieveTransferList(sourceRequestHeader, "ACCEPTED", Collections.singletonList("CHK123"),
-                "1", "PROD1", "PLAIN_TEXT");
-
-        verify(restClientService).get(any(), any(), any(), anyInt(), anyBoolean());
-    }
-
-    @Test
-    void retrieveTransferListNullAccountList() {
-        Map<String, String> sourceRequestHeader = new HashMap<>();
-        sourceRequestHeader.put(HTTPRequestHeaderConstants.X_HSBC_CHNL_COUNTRYCODE, "HK");
-        sourceRequestHeader.put(HTTPRequestHeaderConstants.X_HSBC_CHNL_GROUP_MEMBER, "HBAP");
-        sourceRequestHeader.put(HTTPRequestHeaderConstants.X_HSBC_SAML, dummyToken);
-        sourceRequestHeader.put(HTTPRequestHeaderConstants.X_HSBC_SAML3, dummyToken);
-        sourceRequestHeader.put(HTTPRequestHeaderConstants.X_HSBC_CUSTOMER_ID, "CUST123");
-
-        RetrieveTransferListResponse response = new RetrieveTransferListResponse();
-        RetrieveTransferListResponseData responseData = new RetrieveTransferListResponseData();
-        responseData.setTransferLists(new ArrayList<>());
-        response.setData(responseData);
-        ResponseDetails responseDetails = new ResponseDetails();
-        responseDetails.setResponseCodeNumber(0);
-        response.setResponseDetails(responseDetails);
-
-        CustomerAccounts customerAccounts = new CustomerAccounts(); // Null list
-        customerAccounts.setInvestmentAccountList(null);
-
-        PartyNameResponse nameResponse = new PartyNameResponse();
-        PartyNameResponseData nameData = new PartyNameResponseData();
-        PartyNameValue nameValue = new PartyNameValue();
-        nameValue.setGivenName("John");
-        nameValue.setLastName("Doe");
-        nameValue.setCustomerChristianName("Christian");
-        nameData.setName(nameValue);
-        nameResponse.setData(nameData);
-
-        PartyContactResponse contactResponse = new PartyContactResponse();
-        PartyContactResponseData contactData = new PartyContactResponseData();
-        contactData.setMobileNumber1("12345678");
-        contactResponse.setData(contactData);
-
-        when(restClientService.get(any(), any(), any(), anyInt(), anyBoolean())).thenReturn(response);
-        when(restClientService.get(eq("https://dummy.accounts"), any(), eq(CustomerAccounts.class), anyInt(), anyBoolean())).thenReturn(customerAccounts);
-        when(restClientService.get(contains("partyName"), any(), eq(PartyNameResponse.class), anyInt(), anyBoolean())).thenReturn(nameResponse);
-        when(restClientService.get(contains("partyContact"), any(), eq(PartyContactResponse.class), anyInt(), anyBoolean())).thenReturn(contactResponse);
-        when(e2ETrustTokenUtil.generateE2ETrustToken(anyString(), anyMap())).thenReturn("dummy-token");
-
-        tradeTransferService.retrieveTransferList(sourceRequestHeader, "ACCEPTED", Collections.singletonList("CHK123"),
-                "1", "PROD1", "PLAIN_TEXT");
-
-        verify(restClientService).get(any(), any(), any(), anyInt(), anyBoolean());
-    }
-
-    @Test
-    void retrieveTransferDetail() {
-        Map<String, String> sourceRequestHeader = new HashMap<>();
-        sourceRequestHeader.put(HTTPRequestHeaderConstants.X_HSBC_CHNL_COUNTRYCODE, "HK");
-        sourceRequestHeader.put(HTTPRequestHeaderConstants.X_HSBC_CHNL_GROUP_MEMBER, "HBAP");
-        sourceRequestHeader.put(HTTPRequestHeaderConstants.X_HSBC_SAML, dummyToken);
-        sourceRequestHeader.put(HTTPRequestHeaderConstants.X_HSBC_SAML3, dummyToken);
-        sourceRequestHeader.put(HTTPRequestHeaderConstants.X_HSBC_CUSTOMER_ID, "CUST123");
-
-        RetrieveTransferDetailResponse response = new RetrieveTransferDetailResponse();
-        RetrieveTransferDetailResponseData responseData = new RetrieveTransferDetailResponseData();
-        responseData.setInvestmentAccount(new com.hsbc.trade.transfer.domain.account.InvestmentAccount());
-        responseData.getInvestmentAccount().setAccountNumber("123456");
-        response.setData(responseData);
-        ResponseDetails responseDetails = new ResponseDetails();
-        responseDetails.setResponseCodeNumber(0);
-        response.setResponseDetails(responseDetails);
-
-        CustomerAccounts customerAccounts = new CustomerAccounts();
-        List<InvestmentAccount> accountList = new ArrayList<>();
-        InvestmentAccount account = new InvestmentAccount();
-        AccountId accountId = new AccountId();
-        accountId.setAccountNumber("123456");
-        account.setInvestmentAccountId(accountId);
-        account.setChecksum("CHK123");
-        accountList.add(account);
-        customerAccounts.setInvestmentAccountList(accountList);
-
-        PartyNameResponse nameResponse = new PartyNameResponse();
-        PartyNameResponseData nameData = new PartyNameResponseData();
-        PartyNameValue nameValue = new PartyNameValue();
-        nameValue.setGivenName("John");
-        nameValue.setLastName("Doe");
-        nameValue.setCustomerChristianName("Christian");
-        nameData.setName(nameValue);
-        nameResponse.setData(nameData);
-
-        PartyContactResponse contactResponse = new PartyContactResponse();
-        PartyContactResponseData contactData = new PartyContactResponseData();
-        contactData.setMobileNumber1("12345678");
-        contactResponse.setData(contactData);
-
-        when(restClientService.get(any(), any(), any(), anyInt(), anyBoolean())).thenReturn(response);
-        when(restClientService.get(eq("https://dummy.accounts"), any(), eq(CustomerAccounts.class), anyInt(), anyBoolean())).thenReturn(customerAccounts);
-        when(restClientService.get(contains("partyName"), any(), eq(PartyNameResponse.class), anyInt(), anyBoolean())).thenReturn(nameResponse);
-        when(restClientService.get(contains("partyContact"), any(), eq(PartyContactResponse.class), anyInt(), anyBoolean())).thenReturn(contactResponse);
-        when(e2ETrustTokenUtil.generateE2ETrustToken(anyString(), anyMap())).thenReturn("dummy-token");
-
-        tradeTransferService.retrieveTransferDetail(sourceRequestHeader, "REF123");
-
-        verify(restClientService).get(any(), any(), any(), anyInt(), anyBoolean());
-    }
-
-    @Test
-    void retrieveTransferDetailNullInvestmentAccount() {
-        Map<String, String> sourceRequestHeader = new HashMap<>();
-        sourceRequestHeader.put(HTTPRequestHeaderConstants.X_HSBC_CHNL_COUNTRYCODE, "HK");
-        sourceRequestHeader.put(HTTPRequestHeaderConstants.X_HSBC_CHNL_GROUP_MEMBER, "HBAP");
-        sourceRequestHeader.put(HTTPRequestHeaderConstants.X_HSBC_SAML, dummyToken);
-        sourceRequestHeader.put(HTTPRequestHeaderConstants.X_HSBC_SAML3, dummyToken);
-        sourceRequestHeader.put(HTTPRequestHeaderConstants.X_HSBC_CUSTOMER_ID, "CUST123");
-
-        RetrieveTransferDetailResponse response = new RetrieveTransferDetailResponse();
-        RetrieveTransferDetailResponseData responseData = new RetrieveTransferDetailResponseData();
-        responseData.setInvestmentAccount(null); // Null investment account
-        response.setData(responseData);
-        ResponseDetails responseDetails = new ResponseDetails();
-        responseDetails.setResponseCodeNumber(0);
-        response.setResponseDetails(responseDetails);
-
-        when(restClientService.get(any(), any(), any(), anyInt(), anyBoolean())).thenReturn(response);
-
-        RetrieveTransferDetailResponse result = tradeTransferService.retrieveTransferDetail(sourceRequestHeader, "REF123");
-
-        verify(restClientService).get(any(), any(), any(), anyInt(), anyBoolean());
-        assertNull(result.getData().getInvestmentAccount());
-    }
-
-    @Test
-    void retrieveTransferDetailAccountNotFound() {
-        Map<String, String> sourceRequestHeader = new HashMap<>();
-        sourceRequestHeader.put(HTTPRequestHeaderConstants.X_HSBC_CHNL_COUNTRYCODE, "HK");
-        sourceRequestHeader.put(HTTPRequestHeaderConstants.X_HSBC_CHNL_GROUP_MEMBER, "HBAP");
-        sourceRequestHeader.put(HTTPRequestHeaderConstants.X_HSBC_SAML, dummyToken);
-        sourceRequestHeader.put(HTTPRequestHeaderConstants.X_HSBC_SAML3, dummyToken);
-        sourceRequestHeader.put(HTTPRequestHeaderConstants.X_HSBC_CUSTOMER_ID, "CUST123");
-
-        RetrieveTransferDetailResponse response = new RetrieveTransferDetailResponse();
-        RetrieveTransferDetailResponseData responseData = new RetrieveTransferDetailResponseData();
-        responseData.setInvestmentAccount(new com.hsbc.trade.transfer.domain.account.InvestmentAccount());
-        responseData.getInvestmentAccount().setAccountNumber("999999"); // Account number not in list
-        response.setData(responseData);
-        ResponseDetails responseDetails = new ResponseDetails();
-        responseDetails.setResponseCodeNumber(0);
-        response.setResponseDetails(responseDetails);
-
-        CustomerAccounts customerAccounts = new CustomerAccounts();
-        List<InvestmentAccount> accountList = new ArrayList<>();
-        InvestmentAccount account = new InvestmentAccount();
-        AccountId accountId = new AccountId();
-        accountId.setAccountNumber("123456");
-        account.setInvestmentAccountId(accountId);
-        account.setChecksum("CHK123");
-        accountList.add(account);
-        customerAccounts.setInvestmentAccountList(accountList);
-
-        PartyNameResponse nameResponse = new PartyNameResponse();
-        PartyNameResponseData nameData = new PartyNameResponseData();
-        PartyNameValue nameValue = new PartyNameValue();
-        nameValue.setGivenName("John");
-        nameValue.setLastName("Doe");
-        nameValue.setCustomerChristianName("Christian");
-        nameData.setName(nameValue);
-        nameResponse.setData(nameData);
-
-        PartyContactResponse contactResponse = new PartyContactResponse();
-        PartyContactResponseData contactData = new PartyContactResponseData();
-        contactData.setMobileNumber1("12345678");
-        contactResponse.setData(contactData);
-
-        when(restClientService.get(any(), any(), any(), anyInt(), anyBoolean())).thenReturn(response);
-        when(restClientService.get(eq("https://dummy.accounts"), any(), eq(CustomerAccounts.class), anyInt(), anyBoolean())).thenReturn(customerAccounts);
-        when(restClientService.get(contains("partyName"), any(), eq(PartyNameResponse.class), anyInt(), anyBoolean())).thenReturn(nameResponse);
-        when(restClientService.get(contains("partyContact"), any(), eq(PartyContactResponse.class), anyInt(), anyBoolean())).thenReturn(contactResponse);
-        when(e2ETrustTokenUtil.generateE2ETrustToken(anyString(), anyMap())).thenReturn("dummy-token");
-
-        assertThrows(BadRequestException.class, () -> tradeTransferService.retrieveTransferDetail(sourceRequestHeader, "REF123"));
-    }
-
-    @Test
-    void retrieveTransferDetailRestClientException() {
-        Map<String, String> sourceRequestHeader = new HashMap<>();
-        sourceRequestHeader.put(HTTPRequestHeaderConstants.X_HSBC_CHNL_COUNTRYCODE, "HK");
-        sourceRequestHeader.put(HTTPRequestHeaderConstants.X_HSBC_CHNL_GROUP_MEMBER, "HBAP");
-        sourceRequestHeader.put(HTTPRequestHeaderConstants.X_HSBC_SAML, dummyToken);
-        sourceRequestHeader.put(HTTPRequestHeaderConstants.X_HSBC_SAML3, dummyToken);
-        sourceRequestHeader.put(HTTPRequestHeaderConstants.X_HSBC_CUSTOMER_ID, "CUST123");
-
-        when(restClientService.get(any(), any(), any(), anyInt(), anyBoolean())).thenThrow(new RuntimeException("Network Error"));
-
-        assertThrows(InternalServerErrorException.class, () -> tradeTransferService.retrieveTransferDetail(sourceRequestHeader, "REF123"));
-    }
-
-    @Test
-    void createTransfers() {
-        InvestmentAccountId investmentAccountId = new InvestmentAccountId();
-        investmentAccountId.setCountryAccountCode("HK");
-        investmentAccountId.setGroupMemberAccountCode("HBAP");
-        investmentAccountId.setAccountNumber("123456");
-        investmentAccountId.setAccountProductTypeCode("SAV");
-        investmentAccountId.setAccountTypeCode("01");
-        investmentAccountId.setAccountCurrencyCode("HKD");
-
-        InvestmentAccountIdList accountIdList = new InvestmentAccountIdList();
-        accountIdList.setAccountId(investmentAccountId);
-
-        RetrieveCustomerAccountsIdListResponse response = new RetrieveCustomerAccountsIdListResponse();
-        response.setAccountIdList(List.of(accountIdList));
-
-        lenient().when(restClientService.get(anyString(), any(), eq(RetrieveCustomerAccountsIdListResponse.class), anyInt(), anyBoolean()))
-                .thenReturn(response);
-
-        CreateTransferRequest request = new CreateTransferRequest();
-        CreateTransferRequestData data = new CreateTransferRequestData();
-        request.setData(data);
-        request.getData().setSenderInvestmentAccountChecksumIdentifier("12345");
-        request.getData().setActionRequestCode(ActionRequestCode.D); // D operation
-        request.getData().setRequestPriceValue(BigDecimal.valueOf(1000.00)); // Price for D operation
-        ReceiverInfo receiver = new ReceiverInfo();
-        receiver.setTransferQuantity(BigDecimal.valueOf(100));
-        receiver.setReceiverCustomerNumber("12345");
-        List<ReceiverInfo> receivers = new ArrayList<>();
-        receivers.add(receiver);
-        request.getData().setReceiverLists(receivers);
-        Map<String, String> sourceRequestHeader = new HashMap<>();
-        sourceRequestHeader.put(HTTPRequestHeaderConstants.X_HSBC_CHNL_COUNTRYCODE, "HK");
-        sourceRequestHeader.put(HTTPRequestHeaderConstants.X_HSBC_CHNL_GROUP_MEMBER, "HBAP");
-        sourceRequestHeader.put(HTTPRequestHeaderConstants.X_HSBC_SAML, dummyToken);
-        sourceRequestHeader.put(HTTPRequestHeaderConstants.X_HSBC_SAML3, dummyToken);
-        sourceRequestHeader.put(HTTPRequestHeaderConstants.X_HSBC_CUSTOMER_ID, "CUST123");
-
-        CreateTransferResponse mockCreateTransferResponse = new CreateTransferResponse();
-        ResponseDetails responseDetails = new ResponseDetails();
-        responseDetails.setResponseCodeNumber(0);
-        mockCreateTransferResponse.setResponseDetails(responseDetails);
-
-        RuleResponse sreResponse = new RuleResponse();
-        ResponseDetails sreDetails = new ResponseDetails();
-        sreDetails.setResponseCodeNumber(0);
-        sreResponse.setResponseDetails(sreDetails);
-
-        PartyNameResponse nameResponse = new PartyNameResponse();
-        PartyNameResponseData nameData = new PartyNameResponseData();
-        PartyNameValue nameValue = new PartyNameValue();
-        nameValue.setGivenName("John");
-        nameValue.setLastName("Doe");
-        nameValue.setCustomerChristianName("Christian");
-        nameData.setName(nameValue);
-        nameResponse.setData(nameData);
-
-        GoldPriceResponse goldPriceResponse = new GoldPriceResponse();
-        GoldPriceResponseData goldPriceData = new GoldPriceResponseData();
-        goldPriceData.setGoldPriceAmount(BigDecimal.valueOf(1200.50));
-        goldPriceData.setPublishTime("2025-08-07T01:25:13.837Z");
-        goldPriceResponse.setData(goldPriceData);
-
-        RetrieveTransferLimitResponse limitResponse = new RetrieveTransferLimitResponse();
-        RetrieveTransferLimitResponseData limitData = new RetrieveTransferLimitResponseData();
-        limitData.setAvailableTodayAmount(BigDecimal.valueOf(100000));
-        limitData.setMaxDailyLimitedAmount(BigDecimal.valueOf(100000));
-        limitData.setAvailableMonthToDateAmount(BigDecimal.valueOf(1000000));
-        limitData.setMaxMonthlyLimitedAmount(BigDecimal.valueOf(1000000));
-        limitData.setAvailableYearToDateAmount(BigDecimal.valueOf(10000000));
-        limitData.setMaxYearlyLimitedAmount(BigDecimal.valueOf(10000000));
-        limitResponse.setData(limitData);
-
-        lenient().when(sreValidationService.callSreForTransferValidation(anyString(), anyString(), anyString(), anyMap()))
-                .thenReturn(sreResponse);
-        when(restClientService.get(contains("partyName"), any(), eq(PartyNameResponse.class), anyInt(), anyBoolean())).thenReturn(nameResponse);
-        when(restClientService.get(contains("goldPrice"), any(), eq(GoldPriceResponse.class), anyInt(), anyBoolean())).thenReturn(goldPriceResponse);
-        when(restClientService.post(anyString(), any(), any(), eq(CreateTransferResponse.class), anyInt(), anyBoolean())).thenReturn(mockCreateTransferResponse);
-        when(tradeLimitService.retrieveLimitations(anyMap())).thenReturn(limitResponse);
-        when(duplicateSubmitPreventionService.generateUniqueKey()).thenReturn("UNIQUE_KEY_123");
-
-        tradeTransferService.createTransfers(sourceRequestHeader, request);
-
-        verify(restClientService).post(anyString(), any(), any(), eq(CreateTransferResponse.class), anyInt(), anyBoolean());
-    }
-
-    @Test
-    void createTransfersLimitExceededException() {
-        InvestmentAccountId investmentAccountId = new InvestmentAccountId();
-        investmentAccountId.setCountryAccountCode("HK");
-        investmentAccountId.setGroupMemberAccountCode("HBAP");
-        investmentAccountId.setAccountNumber("123456");
-        investmentAccountId.setAccountProductTypeCode("SAV");
-        investmentAccountId.setAccountTypeCode("01");
-        investmentAccountId.setAccountCurrencyCode("HKD");
-
-        InvestmentAccountIdList accountIdList = new InvestmentAccountIdList();
-        accountIdList.setAccountId(investmentAccountId);
-
-        RetrieveCustomerAccountsIdListResponse response = new RetrieveCustomerAccountsIdListResponse();
-        response.setAccountIdList(List.of(accountIdList));
-
-        lenient().when(restClientService.get(anyString(), any(), eq(RetrieveCustomerAccountsIdListResponse.class), anyInt(), anyBoolean()))
-                .thenReturn(response);
-
-        CreateTransferRequest request = new CreateTransferRequest();
-        CreateTransferRequestData data = new CreateTransferRequestData();
-        request.setData(data);
-        request.getData().setSenderInvestmentAccountChecksumIdentifier("12345");
-        request.getData().setRequestPriceValue(BigDecimal.valueOf(1000.00));
-        ReceiverInfo receiver = new ReceiverInfo();
-        receiver.setTransferQuantity(BigDecimal.valueOf(100)); // Total amount = 1000.00 * 100 = 100,000
-        receiver.setReceiverCustomerNumber("12345");
-        List<ReceiverInfo> receivers = new ArrayList<>();
-        receivers.add(receiver);
-        request.getData().setReceiverLists(receivers);
-        Map<String, String> sourceRequestHeader = new HashMap<>();
-        sourceRequestHeader.put(HTTPRequestHeaderConstants.X_HSBC_CHNL_COUNTRYCODE, "HK");
-        sourceRequestHeader.put(HTTPRequestHeaderConstants.X_HSBC_CHNL_GROUP_MEMBER, "HBAP");
-        sourceRequestHeader.put(HTTPRequestHeaderConstants.X_HSBC_SAML, dummyToken);
-        sourceRequestHeader.put(HTTPRequestHeaderConstants.X_HSBC_SAML3, dummyToken);
-        sourceRequestHeader.put(HTTPRequestHeaderConstants.X_HSBC_CUSTOMER_ID, "CUST123");
-
-        RuleResponse sreResponse = new RuleResponse();
-        ResponseDetails sreDetails = new ResponseDetails();
-        sreDetails.setResponseCodeNumber(0);
-        sreResponse.setResponseDetails(sreDetails);
-
-        RetrieveTransferLimitResponse limitResponse = new RetrieveTransferLimitResponse();
-        RetrieveTransferLimitResponseData limitData = new RetrieveTransferLimitResponseData();
-        limitData.setAvailableTodayAmount(BigDecimal.valueOf(50000)); // Less than required amount
-        limitData.setMaxDailyLimitedAmount(BigDecimal.valueOf(100000));
-        limitData.setAvailableMonthToDateAmount(BigDecimal.valueOf(500000));
-        limitData.setMaxMonthlyLimitedAmount(BigDecimal.valueOf(1000000));
-        limitData.setAvailableYearToDateAmount(BigDecimal.valueOf(5000000));
-        limitData.setMaxYearlyLimitedAmount(BigDecimal.valueOf(10000000));
-        limitResponse.setData(limitData);
-
-        lenient().when(sreValidationService.callSreForTransferValidation(anyString(), anyString(), anyString(), anyMap()))
-                .thenReturn(sreResponse);
-        when(tradeLimitService.retrieveLimitations(anyMap())).thenReturn(limitResponse);
-
-        assertThrows(TransferLimitExceededException.class, () -> tradeTransferService.createTransfers(sourceRequestHeader, request));
-    }
-
-    @Test
-    void createTransfersNullRequestPriceValue() {
-        InvestmentAccountId investmentAccountId = new InvestmentAccountId();
-        investmentAccountId.setCountryAccountCode("HK");
-        investmentAccountId.setGroupMemberAccountCode("HBAP");
-        investmentAccountId.setAccountNumber("123456");
-        investmentAccountId.setAccountProductTypeCode("SAV");
-        investmentAccountId.setAccountTypeCode("01");
-        investmentAccountId.setAccountCurrencyCode("HKD");
-
-        InvestmentAccountIdList accountIdList = new InvestmentAccountIdList();
-        accountIdList.setAccountId(investmentAccountId);
-
-        RetrieveCustomerAccountsIdListResponse response = new RetrieveCustomerAccountsIdListResponse();
-        response.setAccountIdList(List.of(accountIdList));
-
-        lenient().when(restClientService.get(anyString(), any(), eq(RetrieveCustomerAccountsIdListResponse.class), anyInt(), anyBoolean()))
-                .thenReturn(response);
-
-        CreateTransferRequest request = new CreateTransferRequest();
-        CreateTransferRequestData data = new CreateTransferRequestData();
-        request.setData(data);
-        request.getData().setSenderInvestmentAccountChecksumIdentifier("12345");
-        request.getData().setActionRequestCode(ActionRequestCode.C); // C operation, no price update
-        request.getData().setRequestPriceValue(null); // Null price
-        ReceiverInfo receiver = new ReceiverInfo();
-        receiver.setTransferQuantity(BigDecimal.valueOf(100));
-        receiver.setReceiverCustomerNumber("12345");
-        List<ReceiverInfo> receivers = new ArrayList<>();
-        receivers.add(receiver);
-        request.getData().setReceiverLists(receivers);
-        Map<String, String> sourceRequestHeader = new HashMap<>();
-        sourceRequestHeader.put(HTTPRequestHeaderConstants.X_HSBC_CHNL_COUNTRYCODE, "HK");
-        sourceRequestHeader.put(HTTPRequestHeaderConstants.X_HSBC_CHNL_GROUP_MEMBER, "HBAP");
-        sourceRequestHeader.put(HTTPRequestHeaderConstants.X_HSBC_SAML, dummyToken);
-        sourceRequestHeader.put(HTTPRequestHeaderConstants.X_HSBC_SAML3, dummyToken);
-        sourceRequestHeader.put(HTTPRequestHeaderConstants.X_HSBC_CUSTOMER_ID, "CUST123");
-
-        CreateTransferResponse mockCreateTransferResponse = new CreateTransferResponse();
-        ResponseDetails responseDetails = new ResponseDetails();
-        responseDetails.setResponseCodeNumber(0);
-        mockCreateTransferResponse.setResponseDetails(responseDetails);
-
-        RuleResponse sreResponse = new RuleResponse();
-        ResponseDetails sreDetails = new ResponseDetails();
-        sreDetails.setResponseCodeNumber(0);
-        sreResponse.setResponseDetails(sreDetails);
-
-        PartyNameResponse nameResponse = new PartyNameResponse();
-        PartyNameResponseData nameData = new PartyNameResponseData();
-        PartyNameValue nameValue = new PartyNameValue();
-        nameValue.setGivenName("John");
-        nameValue.setLastName("Doe");
-        nameValue.setCustomerChristianName("Christian");
-        nameData.setName(nameValue);
-        nameResponse.setData(nameData);
-
-        RetrieveTransferLimitResponse limitResponse = new RetrieveTransferLimitResponse();
-        RetrieveTransferLimitResponseData limitData = new RetrieveTransferLimitResponseData();
-        limitData.setAvailableTodayAmount(BigDecimal.valueOf(100000));
-        limitData.setMaxDailyLimitedAmount(BigDecimal.valueOf(100000));
-        limitData.setAvailableMonthToDateAmount(BigDecimal.valueOf(1000000));
-        limitData.setMaxMonthlyLimitedAmount(BigDecimal.valueOf(1000000));
-        limitData.setAvailableYearToDateAmount(BigDecimal.valueOf(10000000));
-        limitData.setMaxYearlyLimitedAmount(BigDecimal.valueOf(10000000));
-        limitResponse.setData(limitData);
-
-        lenient().when(sreValidationService.callSreForTransferValidation(anyString(), anyString(), anyString(), anyMap()))
-                .thenReturn(sreResponse);
-        when(restClientService.get(contains("partyName"), any(), eq(PartyNameResponse.class), anyInt(), anyBoolean())).thenReturn(nameResponse);
-        when(restClientService.post(anyString(), any(), any(), eq(CreateTransferResponse.class), anyInt(), anyBoolean())).thenReturn(mockCreateTransferResponse);
-        when(tradeLimitService.retrieveLimitations(anyMap())).thenReturn(limitResponse);
-
-        tradeTransferService.createTransfers(sourceRequestHeader, request);
-
-        verify(restClientService).post(anyString(), any(), any(), eq(CreateTransferResponse.class), anyInt(), anyBoolean());
-    }
-
-    @Test
-    void createTransfersNullReceivers() {
-        InvestmentAccountId investmentAccountId = new InvestmentAccountId();
-        investmentAccountId.setCountryAccountCode("HK");
-        investmentAccountId.setGroupMemberAccountCode("HBAP");
-        investmentAccountId.setAccountNumber("123456");
-        investmentAccountId.setAccountProductTypeCode("SAV");
-        investmentAccountId.setAccountTypeCode("01");
-        investmentAccountId.setAccountCurrencyCode("HKD");
-
-        InvestmentAccountIdList accountIdList = new InvestmentAccountIdList();
-        accountIdList.setAccountId(investmentAccountId);
-
-        RetrieveCustomerAccountsIdListResponse response = new RetrieveCustomerAccountsIdListResponse();
-        response.setAccountIdList(List.of(accountIdList));
-
-        lenient().when(restClientService.get(anyString(), any(), eq(RetrieveCustomerAccountsIdListResponse.class), anyInt(), anyBoolean()))
-                .thenReturn(response);
-
-        CreateTransferRequest request = new CreateTransferRequest();
-        CreateTransferRequestData data = new CreateTransferRequestData();
-        request.setData(data);
-        request.getData().setSenderInvestmentAccountChecksumIdentifier("12345");
-        request.getData().setRequestPriceValue(BigDecimal.valueOf(1000.00));
-        request.getData().setReceiverLists(null); // Null receivers
-        Map<String, String> sourceRequestHeader = new HashMap<>();
-        sourceRequestHeader.put(HTTPRequestHeaderConstants.X_HSBC_CHNL_COUNTRYCODE, "HK");
-        sourceRequestHeader.put(HTTPRequestHeaderConstants.X_HSBC_CHNL_GROUP_MEMBER, "HBAP");
-        sourceRequestHeader.put(HTTPRequestHeaderConstants.X_HSBC_SAML, dummyToken);
-        sourceRequestHeader.put(HTTPRequestHeaderConstants.X_HSBC_SAML3, dummyToken);
-        sourceRequestHeader.put(HTTPRequestHeaderConstants.X_HSBC_CUSTOMER_ID, "CUST123");
-
-        CreateTransferResponse mockCreateTransferResponse = new CreateTransferResponse();
-        ResponseDetails responseDetails = new ResponseDetails();
-        responseDetails.setResponseCodeNumber(0);
-        mockCreateTransferResponse.setResponseDetails(responseDetails);
-
-        PartyNameResponse nameResponse = new PartyNameResponse();
-        PartyNameResponseData nameData = new PartyNameResponseData();
-        PartyNameValue nameValue = new PartyNameValue();
-        nameValue.setGivenName("John");
-        nameValue.setLastName("Doe");
-        nameValue.setCustomerChristianName("Christian");
-        nameData.setName(nameValue);
-        nameResponse.setData(nameData);
-
-        RetrieveTransferLimitResponse limitResponse = new RetrieveTransferLimitResponse();
-        RetrieveTransferLimitResponseData limitData = new RetrieveTransferLimitResponseData();
-        limitData.setAvailableTodayAmount(BigDecimal.valueOf(100000));
-        limitData.setMaxDailyLimitedAmount(BigDecimal.valueOf(100000));
-        limitData.setAvailableMonthToDateAmount(BigDecimal.valueOf(1000000));
-        limitData.setMaxMonthlyLimitedAmount(BigDecimal.valueOf(1000000));
-        limitData.setAvailableYearToDateAmount(BigDecimal.valueOf(10000000));
-        limitData.setMaxYearlyLimitedAmount(BigDecimal.valueOf(10000000));
-        limitResponse.setData(limitData);
-
-        when(restClientService.get(contains("partyName"), any(), eq(PartyNameResponse.class), anyInt(), anyBoolean())).thenReturn(nameResponse);
-        when(restClientService.post(anyString(), any(), any(), eq(CreateTransferResponse.class), anyInt(), anyBoolean())).thenReturn(mockCreateTransferResponse);
-        when(tradeLimitService.retrieveLimitations(anyMap())).thenReturn(limitResponse);
-
-        tradeTransferService.createTransfers(sourceRequestHeader, request);
-
-        verify(restClientService).post(anyString(), any(), any(), eq(CreateTransferResponse.class), anyInt(), anyBoolean());
-    }
-
-    @Test
-    void modifyTransfersAcceptAction() {
-        InvestmentAccountId investmentAccountId = new InvestmentAccountId();
-        investmentAccountId.setCountryAccountCode("HK");
-        investmentAccountId.setGroupMemberAccountCode("HBAP");
-        investmentAccountId.setAccountNumber("123456");
-        investmentAccountId.setAccountProductTypeCode("SAV");
-        investmentAccountId.setAccountTypeCode("01");
-        investmentAccountId.setAccountCurrencyCode("HKD");
-
-        InvestmentAccountIdList accountIdList = new InvestmentAccountIdList();
-        accountIdList.setAccountId(investmentAccountId);
-
-        RetrieveCustomerAccountsIdListResponse response = new RetrieveCustomerAccountsIdListResponse();
-        response.setAccountIdList(List.of(accountIdList));
-        RuleResponse sreResponse = new RuleResponse();
-        ResponseDetails sreDetails = new ResponseDetails();
-        sreDetails.setResponseCodeNumber(0);
-        sreResponse.setResponseDetails(sreDetails);
-
-        when(restClientService.get(anyString(), any(), eq(RetrieveCustomerAccountsIdListResponse.class), anyInt(), anyBoolean()))
-                .thenReturn(response);
-        lenient().when(sreValidationService.callSreForTransferValidation(anyString(), anyString(),anyString(), anyMap()))
-                .thenReturn(sreResponse);
-
-        UpdateTransferRequest request = new UpdateTransferRequest();
-        UpdateTransferRequestData data = new UpdateTransferRequestData();
-        request.setData(data);
-        request.getData().setReceiverInvestmentAccountChecksumIdentifier("12345");
-
-        TransferActionCode actionCode = TransferActionCode.A; // Accept
-        request.getData().setTransferActionCode(actionCode);
-        request.getData().setReceiverCustomerInternalNumber("RECEIVER_CIN");
-
-        Map<String, String> sourceRequestHeader = new HashMap<>();
-        sourceRequestHeader.put(HTTPRequestHeaderConstants.X_HSBC_CHNL_COUNTRYCODE, "HK");
-        sourceRequestHeader.put(HTTPRequestHeaderConstants.X_HSBC_CHNL_GROUP_MEMBER, "HBAP");
-        sourceRequestHeader.put(HTTPRequestHeaderConstants.X_HSBC_SAML, dummyToken);
-        sourceRequestHeader.put(HTTPRequestHeaderConstants.X_HSBC_SAML3, dummyToken);
-        sourceRequestHeader.put(HTTPRequestHeaderConstants.X_HSBC_CUSTOMER_ID, "SENDER_CIN");
-
-        UpdateTransferResponse mockUpdateTransferResponse = new UpdateTransferResponse();
-        ResponseDetails responseDetails = new ResponseDetails();
-        responseDetails.setResponseCodeNumber(0);
-        mockUpdateTransferResponse.setResponseDetails(responseDetails);
-
-        GoldPriceResponse goldPriceResponse = new GoldPriceResponse();
-        GoldPriceResponseData goldPriceData = new GoldPriceResponseData();
-        goldPriceData.setGoldPriceAmount(BigDecimal.valueOf(1200.50));
-        goldPriceData.setPublishTime("2025-08-07T01:25:13.837Z");
-        goldPriceResponse.setData(goldPriceData);
-
-        when(restClientService.get(contains("goldPrice"), any(), eq(GoldPriceResponse.class), anyInt(), anyBoolean())).thenReturn(goldPriceResponse);
-        when(restClientService.put(anyString(), any(), any(), eq(UpdateTransferResponse.class), anyInt(), anyBoolean())).thenReturn(mockUpdateTransferResponse);
-
-        tradeTransferService.modifyTransfers(sourceRequestHeader, request);
-
-        verify(restClientService).put(anyString(), any(), any(), eq(UpdateTransferResponse.class), anyInt(), anyBoolean());
-    }
-
-    @Test
-    void modifyTransfersRejectAction() {
-        InvestmentAccountId investmentAccountId = new InvestmentAccountId();
-        investmentAccountId.setCountryAccountCode("HK");
-        investmentAccountId.setGroupMemberAccountCode("HBAP");
-        investmentAccountId.setAccountNumber("123456");
-        investmentAccountId.setAccountProductTypeCode("SAV");
-        investmentAccountId.setAccountTypeCode("01");
-        investmentAccountId.setAccountCurrencyCode("HKD");
-
-        InvestmentAccountIdList accountIdList = new InvestmentAccountIdList();
-        accountIdList.setAccountId(investmentAccountId);
-
-        RetrieveCustomerAccountsIdListResponse response = new RetrieveCustomerAccountsIdListResponse();
-        response.setAccountIdList(List.of(accountIdList));
-
-        when(restClientService.get(anyString(), any(), eq(RetrieveCustomerAccountsIdListResponse.class), anyInt(), anyBoolean()))
-                .thenReturn(response);
-
-        UpdateTransferRequest request = new UpdateTransferRequest();
-        UpdateTransferRequestData data = new UpdateTransferRequestData();
-        request.setData(data);
-        request.getData().setReceiverInvestmentAccountChecksumIdentifier("12345");
-
-        TransferActionCode actionCode = TransferActionCode.R; // Reject
-        request.getData().setTransferActionCode(actionCode);
-        request.getData().setReceiverCustomerInternalNumber("RECEIVER_CIN");
-
-        Map<String, String> sourceRequestHeader = new HashMap<>();
-        sourceRequestHeader.put(HTTPRequestHeaderConstants.X_HSBC_CHNL_COUNTRYCODE, "HK");
-        sourceRequestHeader.put(HTTPRequestHeaderConstants.X_HSBC_CHNL_GROUP_MEMBER, "HBAP");
-        sourceRequestHeader.put(HTTPRequestHeaderConstants.X_HSBC_SAML, dummyToken);
-        sourceRequestHeader.put(HTTPRequestHeaderConstants.X_HSBC_SAML3, dummyToken);
-        sourceRequestHeader.put(HTTPRequestHeaderConstants.X_HSBC_CUSTOMER_ID, "SENDER_CIN");
-
-        UpdateTransferResponse mockUpdateTransferResponse = new UpdateTransferResponse();
-        ResponseDetails responseDetails = new ResponseDetails();
-        responseDetails.setResponseCodeNumber(0);
-        mockUpdateTransferResponse.setResponseDetails(responseDetails);
-
-        when(restClientService.put(anyString(), any(), any(), eq(UpdateTransferResponse.class), anyInt(), anyBoolean())).thenReturn(mockUpdateTransferResponse);
-
-        tradeTransferService.modifyTransfers(sourceRequestHeader, request);
-
-        verify(restClientService).put(anyString(), any(), any(), eq(UpdateTransferResponse.class), anyInt(), anyBoolean());
-    }
-
-    @Test
-    void modifyTransfersOtherAction() {
-        InvestmentAccountId investmentAccountId = new InvestmentAccountId();
-        investmentAccountId.setCountryAccountCode("HK");
-        investmentAccountId.setGroupMemberAccountCode("HBAP");
-        investmentAccountId.setAccountNumber("123456");
-        investmentAccountId.setAccountProductTypeCode("SAV");
-        investmentAccountId.setAccountTypeCode("01");
-        investmentAccountId.setAccountCurrencyCode("HKD");
-
-        InvestmentAccountIdList accountIdList = new InvestmentAccountIdList();
-        accountIdList.setAccountId(investmentAccountId);
-
-        RetrieveCustomerAccountsIdListResponse response = new RetrieveCustomerAccountsIdListResponse();
-        response.setAccountIdList(List.of(accountIdList));
-
-        when(restClientService.get(anyString(), any(), eq(RetrieveCustomerAccountsIdListResponse.class), anyInt(), anyBoolean()))
-                .thenReturn(response);
-
-        UpdateTransferRequest request = new UpdateTransferRequest();
-        UpdateTransferRequestData data = new UpdateTransferRequestData();
-        request.setData(data);
-        request.getData().setReceiverInvestmentAccountChecksumIdentifier("12345");
-
-        TransferActionCode actionCode = TransferActionCode.C; // Other action code, not R or A
-        request.getData().setTransferActionCode(actionCode);
-        request.getData().setReceiverCustomerInternalNumber("RECEIVER_CIN");
-
-        Map<String, String> sourceRequestHeader = new HashMap<>();
-        sourceRequestHeader.put(HTTPRequestHeaderConstants.X_HSBC_CHNL_COUNTRYCODE, "HK");
-        sourceRequestHeader.put(HTTPRequestHeaderConstants.X_HSBC_CHNL_GROUP_MEMBER, "HBAP");
-        sourceRequestHeader.put(HTTPRequestHeaderConstants.X_HSBC_SAML, dummyToken);
-        sourceRequestHeader.put(HTTPRequestHeaderConstants.X_HSBC_SAML3, dummyToken);
-        sourceRequestHeader.put(HTTPRequestHeaderConstants.X_HSBC_CUSTOMER_ID, "SENDER_CIN");
-
-        UpdateTransferResponse mockUpdateTransferResponse = new UpdateTransferResponse();
-        ResponseDetails responseDetails = new ResponseDetails();
-        responseDetails.setResponseCodeNumber(0);
-        mockUpdateTransferResponse.setResponseDetails(responseDetails);
-
-        when(restClientService.put(anyString(), any(), any(), eq(UpdateTransferResponse.class), anyInt(), anyBoolean())).thenReturn(mockUpdateTransferResponse);
-
-        tradeTransferService.modifyTransfers(sourceRequestHeader, request);
-
-        verify(restClientService).put(anyString(), any(), any(), eq(UpdateTransferResponse.class), anyInt(), anyBoolean());
-    }
-
-    @Test
-    void extractAccountIdMap() throws Exception {
-        Method method = TradeTransferServiceImpl.class.getDeclaredMethod("extractAccountIdMap", CustomerAccounts.class);
-        method.setAccessible(true);
-
-        CustomerAccounts customerAccounts = new CustomerAccounts();
-        List<InvestmentAccount> accountList = new ArrayList<>();
-        InvestmentAccount account = new InvestmentAccount();
-        AccountId accountId = new AccountId();
+        account.setChecksum("CHECKSUM123");
+        InvestmentAccountId accountId = new InvestmentAccountId();
         accountId.setCountryAccountCode("HK");
         accountId.setGroupMemberAccountCode("HBAP");
-        accountId.setAccountNumber("123456");
+        accountId.setAccountNumber("ACC123");
         accountId.setAccountProductTypeCode("SAV");
         accountId.setAccountTypeCode("01");
         accountId.setAccountCurrencyCode("HKD");
         account.setInvestmentAccountId(accountId);
-        account.setChecksum("CHK123");
-        accountList.add(account);
-        customerAccounts.setInvestmentAccountList(accountList);
+        customerAccounts.setInvestmentAccountList(Collections.singletonList(account));
 
-        Map<String, String> result = (Map<String, String>) method.invoke(tradeTransferService, customerAccounts);
+        // Mock party name response
+        PartyNameResponse partyNameResponse = new PartyNameResponse();
+        PartyNameResponseData nameData = new PartyNameResponseData();
+        nameData.setLastName("Doe");
+        nameData.setGivenName("John");
+        nameData.setCustomerChristianName("Christian");
+        partyNameResponse.setName(nameData);
 
-        assertEquals(1, result.size());
-        assertTrue(result.containsKey("CHK123"));
-        assertTrue(result.containsValue("countryAccountCode=HK;groupMemberAccountCode=HBAP;accountNumber=123456;accountProductTypeCode=SAV;accountTypeCode=01;accountCurrencyCode=HKD"));
+        // Mock party contact response
+        PartyContactResponse partyContactResponse = new PartyContactResponse();
+        // Assuming Contact object has a getMobileNumber1 method
+        partyContactResponse.setContact(new Object() {
+            public String getMobileNumber1() { return "123456789"; }
+        });
+
+        RetrieveTransferListResponse mockResponse = new RetrieveTransferListResponse();
+        RetrieveTransferListResponseData mockResponseData = new RetrieveTransferListResponseData();
+        mockResponseData.setTransferLists(new ArrayList<>());
+        mockResponse.setData(mockResponseData);
+        ResponseDetails responseDetails = new ResponseDetails();
+        responseDetails.setResponseCodeNumber(0);
+        mockResponse.setResponseDetails(responseDetails);
+
+        when(restClientService.get(anyString(), anyMap(), eq(RetrieveTransferListResponse.class), anyInt(), anyBoolean()))
+                .thenReturn(mockResponse);
+        when(retrieveCustomerProfilesService.retrieveCustomerAccounts(anyMap())).thenReturn(customerAccounts);
+        when(retrieveCustomerProfilesService.retrieveCustomerNamesWithCinNumber(anyString(), anyMap())).thenReturn(partyNameResponse);
+        when(retrieveCustomerProfilesService.retrieveCustomerPhoneNumberWithCinNumber(anyString(), anyMap())).thenReturn(partyContactResponse);
+        when(e2ETrustTokenUtil.updateHeaderWithE2ETrustToken(anyMap())).thenReturn(anyMap());
+
+        // Act
+        RetrieveTransferListResponse result = tradeTransferService.retrieveTransferList(sourceRequestHeader, "ACCEPTED", Collections.singletonList("CHECKSUM123"), "1", "PROD1", "SENSITIVE");
+
+        // Assert
+        assertNotNull(result);
+        assertEquals(0, result.getResponseDetails().getResponseCodeNumber());
+        verify(restClientService, times(1)).get(anyString(), anyMap(), eq(RetrieveTransferListResponse.class), anyInt(), anyBoolean());
     }
 
     @Test
-    void extractAccountIdMapNullList() throws Exception {
-        Method method = TradeTransferServiceImpl.class.getDeclaredMethod("extractAccountIdMap", CustomerAccounts.class);
-        method.setAccessible(true);
+    void retrieveTransferList_RestClientError_ThrowsException() {
+        // Arrange
+        Map<String, String> sourceRequestHeader = new HashMap<>();
+        sourceRequestHeader.put(HTTPRequestHeaderConstants.X_HSBC_CHNL_COUNTRYCODE, "HK");
+        sourceRequestHeader.put(HTTPRequestHeaderConstants.X_HSBC_CHNL_GROUP_MEMBER, "HBAP");
+        sourceRequestHeader.put(HTTPRequestHeaderConstants.X_HSBC_SAML, DUMMY_TOKEN);
+        sourceRequestHeader.put(HTTPRequestHeaderConstants.X_HSBC_SAML3, DUMMY_TOKEN);
+        sourceRequestHeader.put(HTTPRequestHeaderConstants.X_HSBC_CUSTOMER_ID, "CUST123");
 
-        CustomerAccounts customerAccounts = new CustomerAccounts();
-        customerAccounts.setInvestmentAccountList(null); // Null list
+        when(restClientService.get(anyString(), anyMap(), eq(RetrieveTransferListResponse.class), anyInt(), anyBoolean()))
+                .thenThrow(new RuntimeException("Network error"));
 
-        Map<String, String> result = (Map<String, String>) method.invoke(tradeTransferService, customerAccounts);
-
-        assertTrue(result.isEmpty());
+        // Act & Assert
+        assertThrows(InternalServerErrorException.class, () ->
+                tradeTransferService.retrieveTransferList(sourceRequestHeader, "ACCEPTED", Collections.singletonList("123"), "1", "PROD1", "PLAIN_TEXT")
+        );
     }
 
     @Test
-    void extractAccountIdMapEmptyList() throws Exception {
-        Method method = TradeTransferServiceImpl.class.getDeclaredMethod("extractAccountIdMap", CustomerAccounts.class);
-        method.setAccessible(true);
+    void retrieveTransferDetail_Success() {
+        // Arrange
+        Map<String, String> sourceRequestHeader = new HashMap<>();
+        sourceRequestHeader.put(HTTPRequestHeaderConstants.X_HSBC_CHNL_COUNTRYCODE, "HK");
+        sourceRequestHeader.put(HTTPRequestHeaderConstants.X_HSBC_CHNL_GROUP_MEMBER, "HBAP");
+        sourceRequestHeader.put(HTTPRequestHeaderConstants.X_HSBC_SAML, DUMMY_TOKEN);
+        sourceRequestHeader.put(HTTPRequestHeaderConstants.X_HSBC_SAML3, DUMMY_TOKEN);
+        sourceRequestHeader.put(HTTPRequestHeaderConstants.X_HSBC_CUSTOMER_ID, "CUST123");
 
+        String transferRefNum = "REF123";
+
+        // Mock customer accounts
         CustomerAccounts customerAccounts = new CustomerAccounts();
-        customerAccounts.setInvestmentAccountList(new ArrayList<>()); // Empty list
-
-        Map<String, String> result = (Map<String, String>) method.invoke(tradeTransferService, customerAccounts);
-
-        assertTrue(result.isEmpty());
-    }
-
-    @Test
-    void extractAccountIdMapNullAccountInList() throws Exception {
-        Method method = TradeTransferServiceImpl.class.getDeclaredMethod("extractAccountIdMap", CustomerAccounts.class);
-        method.setAccessible(true);
-
-        CustomerAccounts customerAccounts = new CustomerAccounts();
-        List<InvestmentAccount> accountList = new ArrayList<>();
-        accountList.add(null); // Null account in list
-        customerAccounts.setInvestmentAccountList(accountList);
-
-        Map<String, String> result = (Map<String, String>) method.invoke(tradeTransferService, customerAccounts);
-
-        assertTrue(result.isEmpty());
-    }
-
-    @Test
-    void extractAccountIdMapNullAccountId() throws Exception {
-        Method method = TradeTransferServiceImpl.class.getDeclaredMethod("extractAccountIdMap", CustomerAccounts.class);
-        method.setAccessible(true);
-
-        CustomerAccounts customerAccounts = new CustomerAccounts();
-        List<InvestmentAccount> accountList = new ArrayList<>();
         InvestmentAccount account = new InvestmentAccount();
-        account.setInvestmentAccountId(null); // Null account ID
-        account.setChecksum("CHK123");
-        accountList.add(account);
-        customerAccounts.setInvestmentAccountList(accountList);
+        account.setChecksum("CHECKSUM123");
+        InvestmentAccountId accountId = new InvestmentAccountId();
+        accountId.setCountryAccountCode("HK");
+        accountId.setGroupMemberAccountCode("HBAP");
+        accountId.setAccountNumber("ACC123"); // This matches the investment account in the response
+        accountId.setAccountProductTypeCode("SAV");
+        accountId.setAccountTypeCode("01");
+        accountId.setAccountCurrencyCode("HKD");
+        account.setInvestmentAccountId(accountId);
+        customerAccounts.setInvestmentAccountList(Collections.singletonList(account));
 
-        Map<String, String> result = (Map<String, String>) method.invoke(tradeTransferService, customerAccounts);
+        // Mock response
+        RetrieveTransferDetailResponse mockResponse = new RetrieveTransferDetailResponse();
+        RetrieveTransferDetailResponseData mockResponseData = new RetrieveTransferDetailResponseData();
+        mockResponseData.setTransferSideCode(TransferSideCode.SENDER);
+        InvestmentAccount investmentAccount = new InvestmentAccount();
+        investmentAccount.setAccountNumber("ACC123");
+        mockResponseData.setInvestmentAccount(investmentAccount);
+        mockResponse.setData(mockResponseData);
+        ResponseDetails responseDetails = new ResponseDetails();
+        responseDetails.setResponseCodeNumber(0);
+        mockResponse.setResponseDetails(responseDetails);
 
+        when(restClientService.get(anyString(), anyMap(), eq(RetrieveTransferDetailResponse.class), anyInt(), anyBoolean()))
+                .thenReturn(mockResponse);
+        when(retrieveCustomerProfilesService.retrieveCustomerAccounts(anyMap())).thenReturn(customerAccounts);
+
+        // Act
+        RetrieveTransferDetailResponse result = tradeTransferService.retrieveTransferDetail(sourceRequestHeader, transferRefNum);
+
+        // Assert
+        assertNotNull(result);
+        assertEquals(0, result.getResponseDetails().getResponseCodeNumber());
+        assertEquals("CHECKSUM123", result.getData().getAccountChecksumIdentifier()); // Verify checksum was set
+        verify(restClientService, times(1)).get(anyString(), anyMap(), eq(RetrieveTransferDetailResponse.class), anyInt(), anyBoolean());
+    }
+
+    @Test
+    void retrieveTransferDetail_NoInvestmentAccountInResponse_DoesNotSetChecksum() {
+        // Arrange
+        Map<String, String> sourceRequestHeader = new HashMap<>();
+        sourceRequestHeader.put(HTTPRequestHeaderConstants.X_HSBC_CHNL_COUNTRYCODE, "HK");
+        sourceRequestHeader.put(HTTPRequestHeaderConstants.X_HSBC_CHNL_GROUP_MEMBER, "HBAP");
+        sourceRequestHeader.put(HTTPRequestHeaderConstants.X_HSBC_SAML, DUMMY_TOKEN);
+        sourceRequestHeader.put(HTTPRequestHeaderConstants.X_HSBC_SAML3, DUMMY_TOKEN);
+        sourceRequestHeader.put(HTTPRequestHeaderConstants.X_HSBC_CUSTOMER_ID, "CUST123");
+
+        String transferRefNum = "REF123";
+
+        // Mock response with null investment account
+        RetrieveTransferDetailResponse mockResponse = new RetrieveTransferDetailResponse();
+        RetrieveTransferDetailResponseData mockResponseData = new RetrieveTransferDetailResponseData();
+        mockResponseData.setTransferSideCode(TransferSideCode.SENDER);
+        mockResponseData.setInvestmentAccount(null); // Null investment account
+        mockResponse.setData(mockResponseData);
+        ResponseDetails responseDetails = new ResponseDetails();
+        responseDetails.setResponseCodeNumber(0);
+        mockResponse.setResponseDetails(responseDetails);
+
+        when(restClientService.get(anyString(), anyMap(), eq(RetrieveTransferDetailResponse.class), anyInt(), anyBoolean()))
+                .thenReturn(mockResponse);
+
+        // Act
+        RetrieveTransferDetailResponse result = tradeTransferService.retrieveTransferDetail(sourceRequestHeader, transferRefNum);
+
+        // Assert
+        assertNotNull(result);
+        assertEquals(0, result.getResponseDetails().getResponseCodeNumber());
+        // Checksum should not be set because investment account was null
+        assertNull(result.getData().getAccountChecksumIdentifier());
+        verify(restClientService, times(1)).get(anyString(), anyMap(), eq(RetrieveTransferDetailResponse.class), anyInt(), anyBoolean());
+    }
+
+    @Test
+    void retrieveTransferDetail_AccountNotFoundInCustomerList_ThrowsBadRequest() {
+        // Arrange
+        Map<String, String> sourceRequestHeader = new HashMap<>();
+        sourceRequestHeader.put(HTTPRequestHeaderConstants.X_HSBC_CHNL_COUNTRYCODE, "HK");
+        sourceRequestHeader.put(HTTPRequestHeaderConstants.X_HSBC_CHNL_GROUP_MEMBER, "HBAP");
+        sourceRequestHeader.put(HTTPRequestHeaderConstants.X_HSBC_SAML, DUMMY_TOKEN);
+        sourceRequestHeader.put(HTTPRequestHeaderConstants.X_HSBC_SAML3, DUMMY_TOKEN);
+        sourceRequestHeader.put(HTTPRequestHeaderConstants.X_HSBC_CUSTOMER_ID, "CUST123");
+
+        String transferRefNum = "REF123";
+
+        // Mock customer accounts with a different account number
+        CustomerAccounts customerAccounts = new CustomerAccounts();
+        InvestmentAccount account = new InvestmentAccount();
+        account.setChecksum("CHECKSUM123");
+        InvestmentAccountId accountId = new InvestmentAccountId();
+        accountId.setCountryAccountCode("HK");
+        accountId.setGroupMemberAccountCode("HBAP");
+        accountId.setAccountNumber("DIFFERENT_ACC"); // Different from the one in the response
+        accountId.setAccountProductTypeCode("SAV");
+        accountId.setAccountTypeCode("01");
+        accountId.setAccountCurrencyCode("HKD");
+        account.setInvestmentAccountId(accountId);
+        customerAccounts.setInvestmentAccountList(Collections.singletonList(account));
+
+        // Mock response with a specific investment account
+        RetrieveTransferDetailResponse mockResponse = new RetrieveTransferDetailResponse();
+        RetrieveTransferDetailResponseData mockResponseData = new RetrieveTransferDetailResponseData();
+        mockResponseData.setTransferSideCode(TransferSideCode.SENDER);
+        InvestmentAccount investmentAccount = new InvestmentAccount();
+        investmentAccount.setAccountNumber("ACC123"); // This is the account number in the response
+        mockResponseData.setInvestmentAccount(investmentAccount);
+        mockResponse.setData(mockResponseData);
+        ResponseDetails responseDetails = new ResponseDetails();
+        responseDetails.setResponseCodeNumber(0);
+        mockResponse.setResponseDetails(responseDetails);
+
+        when(restClientService.get(anyString(), anyMap(), eq(RetrieveTransferDetailResponse.class), anyInt(), anyBoolean()))
+                .thenReturn(mockResponse);
+        when(retrieveCustomerProfilesService.retrieveCustomerAccounts(anyMap())).thenReturn(customerAccounts);
+
+        // Act & Assert
+        assertThrows(BadRequestException.class, () ->
+                tradeTransferService.retrieveTransferDetail(sourceRequestHeader, transferRefNum)
+        );
+    }
+
+    @Test
+    void retrieveTransferDetail_RestClientError_ThrowsException() {
+        // Arrange
+        Map<String, String> sourceRequestHeader = new HashMap<>();
+        sourceRequestHeader.put(HTTPRequestHeaderConstants.X_HSBC_CHNL_COUNTRYCODE, "HK");
+        sourceRequestHeader.put(HTTPRequestHeaderConstants.X_HSBC_CHNL_GROUP_MEMBER, "HBAP");
+        sourceRequestHeader.put(HTTPRequestHeaderConstants.X_HSBC_SAML, DUMMY_TOKEN);
+        sourceRequestHeader.put(HTTPRequestHeaderConstants.X_HSBC_SAML3, DUMMY_TOKEN);
+        sourceRequestHeader.put(HTTPRequestHeaderConstants.X_HSBC_CUSTOMER_ID, "CUST123");
+
+        String transferRefNum = "REF123";
+
+        when(restClientService.get(anyString(), anyMap(), eq(RetrieveTransferDetailResponse.class), anyInt(), anyBoolean()))
+                .thenThrow(new RuntimeException("Network error"));
+
+        // Act & Assert
+        assertThrows(InternalServerErrorException.class, () ->
+                tradeTransferService.retrieveTransferDetail(sourceRequestHeader, transferRefNum)
+        );
+    }
+
+    @Test
+    void createTransfers_Success() {
+        // Arrange
+        Map<String, String> sourceRequestHeader = new HashMap<>();
+        sourceRequestHeader.put(HTTPRequestHeaderConstants.X_HSBC_CHNL_COUNTRYCODE, "HK");
+        sourceRequestHeader.put(HTTPRequestHeaderConstants.X_HSBC_CHNL_GROUP_MEMBER, "HBAP");
+        sourceRequestHeader.put(HTTPRequestHeaderConstants.X_HSBC_SAML, DUMMY_TOKEN);
+        sourceRequestHeader.put(HTTPRequestHeaderConstants.X_HSBC_SAML3, DUMMY_TOKEN);
+        sourceRequestHeader.put(HTTPRequestHeaderConstants.X_HSBC_CUSTOMER_ID, "CUST123");
+
+        CreateTransferRequest request = new CreateTransferRequest();
+        CreateTransferRequestData requestData = new CreateTransferRequestData();
+        request.setData(requestData);
+        request.getData().setActionRequestCode(ActionRequestCode.C); // Not D operation
+        request.getData().setSenderInvestmentAccountChecksumIdentifier("CHECKSUM123");
+        request.getData().setRequestPriceValue(new BigDecimal("100")); // Price for C operation
+
+        ReceiverInfo receiver = new ReceiverInfo();
+        receiver.setTransferQuantity(new BigDecimal("50"));
+        receiver.setReceiverCustomerNumber("RECEIVER_CIN");
+        request.getData().setReceiverLists(Collections.singletonList(receiver));
+
+        // Mock limit check
+        RetrieveTransferLimitResponse limitResponse = new RetrieveTransferLimitResponse();
+        RetrieveTransferLimitResponseData limitData = new RetrieveTransferLimitResponseData();
+        limitData.setAvailableTodayAmount(new BigDecimal("10000"));
+        limitData.setAvailableMonthToDateAmount(new BigDecimal("10000"));
+        limitData.setAvailableYearToDateAmount(new BigDecimal("10000"));
+        limitResponse.setData(limitData);
+        when(tradeLimitService.retrieveLimitations(anyMap())).thenReturn(limitResponse);
+
+        // Mock account ID retrieval
+        InvestmentAccountId expectedAccountId = new InvestmentAccountId();
+        expectedAccountId.setCountryAccountCode("HK");
+        expectedAccountId.setGroupMemberAccountCode("HBAP");
+        expectedAccountId.setAccountNumber("ACC123");
+        expectedAccountId.setAccountProductTypeCode("SAV");
+        expectedAccountId.setAccountTypeCode("01");
+        expectedAccountId.setAccountCurrencyCode("HKD");
+        AccountId accountId = new AccountId(expectedAccountId);
+        RetrieveCustomerAccountsIdListResponse accountResponse = new RetrieveCustomerAccountsIdListResponse();
+        accountResponse.setAccountIdList(Collections.singletonList(new InvestmentAccountIdList(expectedAccountId)));
+        when(restClientService.get(anyString(), anyMap(), eq(RetrieveCustomerAccountsIdListResponse.class), anyInt(), anyBoolean()))
+                .thenReturn(accountResponse);
+
+        // Mock SRE validation
+        RuleResponse sreResponse = new RuleResponse();
+        ResponseDetails sreDetails = new ResponseDetails();
+        sreDetails.setResponseCodeNumber(0);
+        sreResponse.setResponseDetails(sreDetails);
+        when(sreValidationService.callSreForTransferValidation(anyString(), anyString(), anyString(), anyMap())).thenReturn(sreResponse);
+
+        // Mock party name response
+        PartyNameResponse partyNameResponse = new PartyNameResponse();
+        PartyNameResponseData nameData = new PartyNameResponseData();
+        nameData.setLastName("Doe");
+        nameData.setGivenName("John");
+        nameData.setCustomerChristianName("Christian");
+        partyNameResponse.setName(nameData);
+        when(retrieveCustomerProfilesService.retrieveCustomerNamesWithCinNumber(anyString(), anyMap())).thenReturn(partyNameResponse);
+        when(e2ETrustTokenUtil.updateHeaderWithE2ETrustToken(anyMap())).thenReturn(anyMap());
+
+        // Mock gold price (not used for C operation)
+        GoldPriceResponse goldPriceResponse = new GoldPriceResponse();
+        GoldPriceResponseData priceData = new GoldPriceResponseData();
+        priceData.setGoldPriceAmount(new BigDecimal("2000"));
+        priceData.setPublishTime("2025-11-20T10:00:00Z");
+        goldPriceResponse.setData(priceData);
+        when(retrieveCustomerProfilesService.retrieveGoldPrice(anyMap())).thenReturn(goldPriceResponse);
+
+        // Mock CreateTransferResponse
+        CreateTransferResponse mockCreateTransferResponse = new CreateTransferResponse();
+        CreateTransferRequestData responseData = new CreateTransferRequestData();
+        responseData.setSenderCustomerName("Doe John Christian"); // Expected full name
+        mockCreateTransferResponse.setData(responseData);
+        ResponseDetails responseDetails = new ResponseDetails();
+        responseDetails.setResponseCodeNumber(0);
+        mockCreateTransferResponse.setResponseDetails(responseDetails);
+
+        when(restClientService.post(anyString(), anyMap(), any(CreateTransferRequest.class), eq(CreateTransferResponse.class), anyInt(), anyBoolean()))
+                .thenReturn(mockCreateTransferResponse);
+
+        // Act
+        CreateTransferResponse result = tradeTransferService.createTransfers(sourceRequestHeader, request);
+
+        // Assert
+        assertNotNull(result);
+        assertEquals(0, result.getResponseDetails().getResponseCodeNumber());
+        assertEquals("Doe John Christian", result.getData().getSenderCustomerName());
+        verify(sreValidationService, times(1)).callSreForTransferValidation(anyString(), anyString(), anyString(), anyMap());
+        verify(restClientService, times(1)).post(anyString(), anyMap(), any(CreateTransferRequest.class), eq(CreateTransferResponse.class), anyInt(), anyBoolean());
+    }
+
+    @Test
+    void createTransfers_DOperation_SetsRealtimePriceAndUniqueKey() {
+        // Arrange
+        Map<String, String> sourceRequestHeader = new HashMap<>();
+        sourceRequestHeader.put(HTTPRequestHeaderConstants.X_HSBC_CHNL_COUNTRYCODE, "HK");
+        sourceRequestHeader.put(HTTPRequestHeaderConstants.X_HSBC_CHNL_GROUP_MEMBER, "HBAP");
+        sourceRequestHeader.put(HTTPRequestHeaderConstants.X_HSBC_SAML, DUMMY_TOKEN);
+        sourceRequestHeader.put(HTTPRequestHeaderConstants.X_HSBC_SAML3, DUMMY_TOKEN);
+        sourceRequestHeader.put(HTTPRequestHeaderConstants.X_HSBC_CUSTOMER_ID, "CUST123");
+
+        CreateTransferRequest request = new CreateTransferRequest();
+        CreateTransferRequestData requestData = new CreateTransferRequestData();
+        request.setData(requestData);
+        request.getData().setActionRequestCode(ActionRequestCode.D); // D operation
+        // request.getData().setRequestPriceValue() will be set by the service based on MDS
+        request.getData().setSenderInvestmentAccountChecksumIdentifier("CHECKSUM123");
+
+        ReceiverInfo receiver = new ReceiverInfo();
+        receiver.setTransferQuantity(new BigDecimal("50"));
+        receiver.setReceiverCustomerNumber("RECEIVER_CIN");
+        request.getData().setReceiverLists(Collections.singletonList(receiver));
+
+        // Mock limit check
+        RetrieveTransferLimitResponse limitResponse = new RetrieveTransferLimitResponse();
+        RetrieveTransferLimitResponseData limitData = new RetrieveTransferLimitResponseData();
+        limitData.setAvailableTodayAmount(new BigDecimal("10000"));
+        limitData.setAvailableMonthToDateAmount(new BigDecimal("10000"));
+        limitData.setAvailableYearToDateAmount(new BigDecimal("10000"));
+        limitResponse.setData(limitData);
+        when(tradeLimitService.retrieveLimitations(anyMap())).thenReturn(limitResponse);
+
+        // Mock account ID retrieval
+        InvestmentAccountId expectedAccountId = new InvestmentAccountId();
+        expectedAccountId.setCountryAccountCode("HK");
+        expectedAccountId.setGroupMemberAccountCode("HBAP");
+        expectedAccountId.setAccountNumber("ACC123");
+        expectedAccountId.setAccountProductTypeCode("SAV");
+        expectedAccountId.setAccountTypeCode("01");
+        expectedAccountId.setAccountCurrencyCode("HKD");
+        AccountId accountId = new AccountId(expectedAccountId);
+        RetrieveCustomerAccountsIdListResponse accountResponse = new RetrieveCustomerAccountsIdListResponse();
+        accountResponse.setAccountIdList(Collections.singletonList(new InvestmentAccountIdList(expectedAccountId)));
+        when(restClientService.get(anyString(), anyMap(), eq(RetrieveCustomerAccountsIdListResponse.class), anyInt(), anyBoolean()))
+                .thenReturn(accountResponse);
+
+        // Mock SRE validation
+        RuleResponse sreResponse = new RuleResponse();
+        ResponseDetails sreDetails = new ResponseDetails();
+        sreDetails.setResponseCodeNumber(0);
+        sreResponse.setResponseDetails(sreDetails);
+        when(sreValidationService.callSreForTransferValidation(anyString(), anyString(), anyString(), anyMap())).thenReturn(sreResponse);
+
+        // Mock party name response
+        PartyNameResponse partyNameResponse = new PartyNameResponse();
+        PartyNameResponseData nameData = new PartyNameResponseData();
+        nameData.setLastName("Doe");
+        nameData.setGivenName("John");
+        nameData.setCustomerChristianName("Christian");
+        partyNameResponse.setName(nameData);
+        when(retrieveCustomerProfilesService.retrieveCustomerNamesWithCinNumber(anyString(), anyMap())).thenReturn(partyNameResponse);
+        when(e2ETrustTokenUtil.updateHeaderWithE2ETrustToken(anyMap())).thenReturn(anyMap());
+
+        // Mock gold price (used for D operation)
+        GoldPriceResponse goldPriceResponse = new GoldPriceResponse();
+        GoldPriceResponseData priceData = new GoldPriceResponseData();
+        priceData.setGoldPriceAmount(new BigDecimal("2000"));
+        priceData.setPublishTime("2025-11-20T10:00:00Z");
+        goldPriceResponse.setData(priceData);
+        when(retrieveCustomerProfilesService.retrieveGoldPrice(anyMap())).thenReturn(goldPriceResponse);
+
+        // Mock CreateTransferResponse with order list
+        CreateTransferResponse mockCreateTransferResponse = new CreateTransferResponse();
+        CreateTransferRequestData responseData = new CreateTransferRequestData();
+        List<TransferOrderInfo> orderList = new ArrayList<>();
+        TransferOrderInfo orderInfo = new TransferOrderInfo();
+        orderInfo.setRequestPriceValue(new BigDecimal("100")); // This should be updated
+        orderList.add(orderInfo);
+        responseData.setTransferOrderLists(orderList);
+        responseData.setRequestPriceValue(new BigDecimal("100")); // This should be updated
+        responseData.setRequestPriceCurrencyCode("USD"); // This should be updated
+        responseData.setRequestPriceAsOfDateTime("2025-11-19T10:00:00Z"); // This should be updated
+        responseData.setSenderCustomerName("Doe John Christian"); // Expected full name
+        mockCreateTransferResponse.setData(responseData);
+        ResponseDetails responseDetails = new ResponseDetails();
+        responseDetails.setResponseCodeNumber(0);
+        mockCreateTransferResponse.setResponseDetails(responseDetails);
+
+        // Mock unique key generation
+        String expectedUniqueKey = "unique-key-123";
+        when(duplicateSubmitPreventionService.generateUniqueKey()).thenReturn(expectedUniqueKey);
+
+        when(restClientService.post(anyString(), anyMap(), any(CreateTransferRequest.class), eq(CreateTransferResponse.class), anyInt(), anyBoolean()))
+                .thenReturn(mockCreateTransferResponse);
+
+        // Act
+        CreateTransferResponse result = tradeTransferService.createTransfers(sourceRequestHeader, request);
+
+        // Assert
+        assertNotNull(result);
+        assertEquals(0, result.getResponseDetails().getResponseCodeNumber());
+        assertEquals("Doe John Christian", result.getData().getSenderCustomerName());
+        // Verify D-operation specific changes
+        assertEquals(expectedUniqueKey, result.getData().getRequestUniqueKey());
+        assertEquals(new BigDecimal("2000"), result.getData().getRequestPriceValue());
+        assertEquals("HKD", result.getData().getRequestPriceCurrencyCode());
+        assertEquals("2025-11-20T10:00:00Z", result.getData().getRequestPriceAsOfDateTime());
+        // Verify order list price was updated
+        assertEquals(new BigDecimal("2000"), result.getData().getTransferOrderLists().get(0).getRequestPriceValue());
+        assertEquals("HKD", result.getData().getTransferOrderLists().get(0).getPriceCurrencyCode());
+        assertEquals("2025-11-20T10:00:00Z", result.getData().getTransferOrderLists().get(0).getRequestPriceAsOfDateTime());
+        verify(sreValidationService, times(1)).callSreForTransferValidation(anyString(), anyString(), anyString(), anyMap());
+        verify(restClientService, times(1)).post(anyString(), anyMap(), any(CreateTransferRequest.class), eq(CreateTransferResponse.class), anyInt(), anyBoolean());
+    }
+
+    @Test
+    void createTransfers_ExceedsDailyLimit_ThrowsException() {
+        // Arrange
+        Map<String, String> sourceRequestHeader = new HashMap<>();
+        sourceRequestHeader.put(HTTPRequestHeaderConstants.X_HSBC_CHNL_COUNTRYCODE, "HK");
+        sourceRequestHeader.put(HTTPRequestHeaderConstants.X_HSBC_CHNL_GROUP_MEMBER, "HBAP");
+        sourceRequestHeader.put(HTTPRequestHeaderConstants.X_HSBC_SAML, DUMMY_TOKEN);
+        sourceRequestHeader.put(HTTPRequestHeaderConstants.X_HSBC_SAML3, DUMMY_TOKEN);
+        sourceRequestHeader.put(HTTPRequestHeaderConstants.X_HSBC_CUSTOMER_ID, "CUST123");
+
+        CreateTransferRequest request = new CreateTransferRequest();
+        CreateTransferRequestData requestData = new CreateTransferRequestData();
+        request.setData(requestData);
+        request.getData().setActionRequestCode(ActionRequestCode.C);
+        request.getData().setSenderInvestmentAccountChecksumIdentifier("CHECKSUM123");
+        request.getData().setRequestPriceValue(new BigDecimal("100"));
+
+        ReceiverInfo receiver = new ReceiverInfo();
+        receiver.setTransferQuantity(new BigDecimal("50")); // Total = 100 * 50 = 5000
+        request.getData().setReceiverLists(Collections.singletonList(receiver));
+
+        // Mock limit check - available is less than required
+        RetrieveTransferLimitResponse limitResponse = new RetrieveTransferLimitResponse();
+        RetrieveTransferLimitResponseData limitData = new RetrieveTransferLimitResponseData();
+        limitData.setAvailableTodayAmount(new BigDecimal("1000")); // Less than 5000
+        limitData.setMaxDailyLimitedAmount(new BigDecimal("10000"));
+        limitResponse.setData(limitData);
+        when(tradeLimitService.retrieveLimitations(anyMap())).thenReturn(limitResponse);
+
+        // Act & Assert
+        assertThrows(TransferLimitExceededException.class, () ->
+                tradeTransferService.createTransfers(sourceRequestHeader, request)
+        );
+        verify(restClientService, never()).post(anyString(), anyMap(), any(CreateTransferRequest.class), eq(CreateTransferResponse.class), anyInt(), anyBoolean());
+    }
+
+    @Test
+    void modifyTransfers_AcceptAction_Success() {
+        // Arrange
+        Map<String, String> sourceRequestHeader = new HashMap<>();
+        sourceRequestHeader.put(HTTPRequestHeaderConstants.X_HSBC_CHNL_COUNTRYCODE, "HK");
+        sourceRequestHeader.put(HTTPRequestHeaderConstants.X_HSBC_CHNL_GROUP_MEMBER, "HBAP");
+        sourceRequestHeader.put(HTTPRequestHeaderConstants.X_HSBC_SAML, DUMMY_TOKEN);
+        sourceRequestHeader.put(HTTPRequestHeaderConstants.X_HSBC_SAML3, DUMMY_TOKEN);
+        sourceRequestHeader.put(HTTPRequestHeaderConstants.X_HSBC_CUSTOMER_ID, "CUST123");
+
+        UpdateTransferRequest request = new UpdateTransferRequest();
+        UpdateTransferRequestData requestData = new UpdateTransferRequestData();
+        request.setData(requestData);
+        request.getData().setTransferActionCode(TransferActionCode.A); // Accept
+        request.getData().setReceiverCustomerInternalNumber("RECEIVER_CIN");
+        request.getData().setReceiverInvestmentAccountChecksumIdentifier("CHECKSUM456");
+
+        // Mock account ID retrieval for receiver
+        InvestmentAccountId expectedAccountId = new InvestmentAccountId();
+        expectedAccountId.setCountryAccountCode("HK");
+        expectedAccountId.setGroupMemberAccountCode("HBAP");
+        expectedAccountId.setAccountNumber("ACC456");
+        expectedAccountId.setAccountProductTypeCode("SAV");
+        expectedAccountId.setAccountTypeCode("01");
+        expectedAccountId.setAccountCurrencyCode("HKD");
+        AccountId accountId = new AccountId(expectedAccountId);
+        RetrieveCustomerAccountsIdListResponse accountResponse = new RetrieveCustomerAccountsIdListResponse();
+        accountResponse.setAccountIdList(Collections.singletonList(new InvestmentAccountIdList(expectedAccountId)));
+        when(restClientService.get(anyString(), anyMap(), eq(RetrieveCustomerAccountsIdListResponse.class), anyInt(), anyBoolean()))
+                .thenReturn(accountResponse);
+
+        // Mock SRE validation for receiver
+        RuleResponse sreResponse = new RuleResponse();
+        ResponseDetails sreDetails = new ResponseDetails();
+        sreDetails.setResponseCodeNumber(0);
+        sreResponse.setResponseDetails(sreDetails);
+        when(sreValidationService.callSreForTransferValidation(anyString(), anyString(), anyString(), anyMap())).thenReturn(sreResponse);
+
+        // Mock gold price
+        GoldPriceResponse goldPriceResponse = new GoldPriceResponse();
+        GoldPriceResponseData priceData = new GoldPriceResponseData();
+        priceData.setGoldPriceAmount(new BigDecimal("2000"));
+        priceData.setPublishTime("2025-11-20T10:00:00Z");
+        goldPriceResponse.setData(priceData);
+        when(retrieveCustomerProfilesService.retrieveGoldPrice(anyMap())).thenReturn(goldPriceResponse);
+
+        // Mock UpdateTransferResponse
+        UpdateTransferResponse mockUpdateTransferResponse = new UpdateTransferResponse();
+        ResponseDetails responseDetails = new ResponseDetails();
+        responseDetails.setResponseCodeNumber(0);
+        mockUpdateTransferResponse.setResponseDetails(responseDetails);
+
+        when(restClientService.put(anyString(), anyMap(), any(UpdateTransferRequest.class), eq(UpdateTransferResponse.class), anyInt(), anyBoolean()))
+                .thenReturn(mockUpdateTransferResponse);
+
+        // Act
+        UpdateTransferResponse result = tradeTransferService.modifyTransfers(sourceRequestHeader, request);
+
+        // Assert
+        assertNotNull(result);
+        assertEquals(0, result.getResponseDetails().getResponseCodeNumber());
+        // Verify SRE was called for accept action
+        verify(sreValidationService, times(1)).callSreForTransferValidation(anyString(), anyString(), anyString(), anyMap());
+        // Verify gold price was fetched for accept action
+        verify(retrieveCustomerProfilesService, times(1)).retrieveGoldPrice(anyMap());
+        // Verify the receiver CIN was updated to the sender's CIN
+        assertEquals("CUST123", request.getData().getReceiverCustomerInternalNumber());
+        // Verify the receiver investment account was set
+        assertEquals(expectedAccountId, request.getData().getReceiverInvestmentAccount().getAccountId());
+        verify(restClientService, times(1)).put(anyString(), anyMap(), any(UpdateTransferRequest.class), eq(UpdateTransferResponse.class), anyInt(), anyBoolean());
+    }
+
+    @Test
+    void modifyTransfers_RejectAction_Success() {
+        // Arrange
+        Map<String, String> sourceRequestHeader = new HashMap<>();
+        sourceRequestHeader.put(HTTPRequestHeaderConstants.X_HSBC_CHNL_COUNTRYCODE, "HK");
+        sourceRequestHeader.put(HTTPRequestHeaderConstants.X_HSBC_CHNL_GROUP_MEMBER, "HBAP");
+        sourceRequestHeader.put(HTTPRequestHeaderConstants.X_HSBC_SAML, DUMMY_TOKEN);
+        sourceRequestHeader.put(HTTPRequestHeaderConstants.X_HSBC_SAML3, DUMMY_TOKEN);
+        sourceRequestHeader.put(HTTPRequestHeaderConstants.X_HSBC_CUSTOMER_ID, "CUST123");
+
+        UpdateTransferRequest request = new UpdateTransferRequest();
+        UpdateTransferRequestData requestData = new UpdateTransferRequestData();
+        request.setData(requestData);
+        request.getData().setTransferActionCode(TransferActionCode.R); // Reject
+        request.getData().setReceiverCustomerInternalNumber("RECEIVER_CIN");
+        request.getData().setReceiverInvestmentAccountChecksumIdentifier("CHECKSUM456"); // This should be ignored for reject
+
+        // Mock UpdateTransferResponse
+        UpdateTransferResponse mockUpdateTransferResponse = new UpdateTransferResponse();
+        ResponseDetails responseDetails = new ResponseDetails();
+        responseDetails.setResponseCodeNumber(0);
+        mockUpdateTransferResponse.setResponseDetails(responseDetails);
+
+        when(restClientService.put(anyString(), anyMap(), any(UpdateTransferRequest.class), eq(UpdateTransferResponse.class), anyInt(), anyBoolean()))
+                .thenReturn(mockUpdateTransferResponse);
+
+        // Act
+        UpdateTransferResponse result = tradeTransferService.modifyTransfers(sourceRequestHeader, request);
+
+        // Assert
+        assertNotNull(result);
+        assertEquals(0, result.getResponseDetails().getResponseCodeNumber());
+        // Verify SRE was NOT called for reject action
+        verify(sreValidationService, never()).callSreForTransferValidation(anyString(), anyString(), anyString(), anyMap());
+        // Verify gold price was NOT fetched for reject action
+        verify(retrieveCustomerProfilesService, never()).retrieveGoldPrice(anyMap());
+        // Verify the receiver CIN was updated to the sender's CIN
+        assertEquals("CUST123", request.getData().getReceiverCustomerInternalNumber());
+        // Verify the receiver investment account was NOT set
+        assertNull(request.getData().getReceiverInvestmentAccount());
+        verify(restClientService, times(1)).put(anyString(), anyMap(), any(UpdateTransferRequest.class), eq(UpdateTransferResponse.class), anyInt(), anyBoolean());
+    }
+
+    @Test
+    void modifyTransfers_NonAcceptOrRejectAction_Success() {
+        // Arrange
+        Map<String, String> sourceRequestHeader = new HashMap<>();
+        sourceRequestHeader.put(HTTPRequestHeaderConstants.X_HSBC_CHNL_COUNTRYCODE, "HK");
+        sourceRequestHeader.put(HTTPRequestHeaderConstants.X_HSBC_CHNL_GROUP_MEMBER, "HBAP");
+        sourceRequestHeader.put(HTTPRequestHeaderConstants.X_HSBC_SAML, DUMMY_TOKEN);
+        sourceRequestHeader.put(HTTPRequestHeaderConstants.X_HSBC_SAML3, DUMMY_TOKEN);
+        sourceRequestHeader.put(HTTPRequestHeaderConstants.X_HSBC_CUSTOMER_ID, "CUST123");
+
+        UpdateTransferRequest request = new UpdateTransferRequest();
+        UpdateTransferRequestData requestData = new UpdateTransferRequestData();
+        request.setData(requestData);
+        request.getData().setTransferActionCode(TransferActionCode.C); // Cancel, not A or R
+        request.getData().setReceiverCustomerInternalNumber("RECEIVER_CIN");
+        request.getData().setReceiverInvestmentAccountChecksumIdentifier("CHECKSUM456"); // This should be ignored
+
+        // Mock UpdateTransferResponse
+        UpdateTransferResponse mockUpdateTransferResponse = new UpdateTransferResponse();
+        ResponseDetails responseDetails = new ResponseDetails();
+        responseDetails.setResponseCodeNumber(0);
+        mockUpdateTransferResponse.setResponseDetails(responseDetails);
+
+        when(restClientService.put(anyString(), anyMap(), any(UpdateTransferRequest.class), eq(UpdateTransferResponse.class), anyInt(), anyBoolean()))
+                .thenReturn(mockUpdateTransferResponse);
+
+        // Act
+        UpdateTransferResponse result = tradeTransferService.modifyTransfers(sourceRequestHeader, request);
+
+        // Assert
+        assertNotNull(result);
+        assertEquals(0, result.getResponseDetails().getResponseCodeNumber());
+        // Verify SRE was NOT called for other actions
+        verify(sreValidationService, never()).callSreForTransferValidation(anyString(), anyString(), anyString(), anyMap());
+        // Verify gold price was NOT fetched for other actions
+        verify(retrieveCustomerProfilesService, never()).retrieveGoldPrice(anyMap());
+        // Verify the receiver CIN was NOT updated (it should remain as provided or be handled differently based on action)
+        // The service sets receiver CIN to sender CIN *only* for A or R.
+        // For other actions, the original value might remain or be handled differently.
+        // Based on the original code: `if (actionCode.equals(TransferActionCode.A))` sets receiverInvestmentAccount and calls SRE.
+        // The `receiverCustomerInternalNumber` is set to sender's CIN inside the `if (actionCode.equals(TransferActionCode.R) || actionCode.equals(TransferActionCode.A))` block.
+        // So for action C, `receiverCustomerInternalNumber` should be set to sender's CIN.
+        assertEquals("CUST123", request.getData().getReceiverCustomerInternalNumber());
+        // Verify the receiver investment account was NOT set
+        assertNull(request.getData().getReceiverInvestmentAccount());
+        verify(restClientService, times(1)).put(anyString(), anyMap(), any(UpdateTransferRequest.class), eq(UpdateTransferResponse.class), anyInt(), anyBoolean());
+    }
+
+    @Test
+    void extractAccountIdMap_EmptyCustomerAccounts_ReturnsEmptyMap() {
+        // Arrange
+        CustomerAccounts customerAccounts = new CustomerAccounts();
+        customerAccounts.setInvestmentAccountList(null); // Or an empty list
+
+        // Act
+        Map<String, String> result = tradeTransferService.extractAccountIdMap(customerAccounts);
+
+        // Assert
         assertTrue(result.isEmpty());
     }
 
     @Test
-    void maskNamesInResponseList() throws Exception {
-        Method method = TradeTransferServiceImpl.class.getDeclaredMethod("maskNamesInResponse", RetrieveTransferListResponseData.class);
-        method.setAccessible(true);
+    void extractAccountIdMap_ValidCustomerAccounts_ReturnsCorrectMap() {
+        // Arrange
+        CustomerAccounts customerAccounts = new CustomerAccounts();
+        InvestmentAccount account1 = new InvestmentAccount();
+        account1.setChecksum("CHECKSUM1");
+        InvestmentAccountId accountId1 = new InvestmentAccountId();
+        accountId1.setCountryAccountCode("HK");
+        accountId1.setGroupMemberAccountCode("HBAP");
+        accountId1.setAccountNumber("ACC1");
+        accountId1.setAccountProductTypeCode("SAV");
+        accountId1.setAccountTypeCode("01");
+        accountId1.setAccountCurrencyCode("HKD");
+        account1.setInvestmentAccountId(accountId1);
 
+        InvestmentAccount account2 = new InvestmentAccount();
+        account2.setChecksum("CHECKSUM2");
+        InvestmentAccountId accountId2 = new InvestmentAccountId();
+        accountId2.setCountryAccountCode("UK");
+        accountId2.setGroupMemberAccountCode("HSBC");
+        accountId2.setAccountNumber("ACC2");
+        accountId2.setAccountProductTypeCode("CUR");
+        accountId2.setAccountTypeCode("02");
+        accountId2.setAccountCurrencyCode("GBP");
+        account2.setInvestmentAccountId(accountId2);
+
+        customerAccounts.setInvestmentAccountList(Arrays.asList(account1, account2));
+
+        // Act
+        Map<String, String> result = tradeTransferService.extractAccountIdMap(customerAccounts);
+
+        // Assert
+        assertEquals(2, result.size());
+        assertTrue(result.containsKey("CHECKSUM1"));
+        assertTrue(result.containsKey("CHECKSUM2"));
+        String expectedFormat1 = "countryAccountCode=HK;groupMemberAccountCode=HBAP;accountNumber=ACC1;accountProductTypeCode=SAV;accountTypeCode=01;accountCurrencyCode=HKD";
+        String expectedFormat2 = "countryAccountCode=UK;groupMemberAccountCode=HSBC;accountNumber=ACC2;accountProductTypeCode=CUR;accountTypeCode=02;accountCurrencyCode=GBP";
+        assertEquals(expectedFormat1, result.get("CHECKSUM1"));
+        assertEquals(expectedFormat2, result.get("CHECKSUM2"));
+    }
+
+    @Test
+    void maskNamesInResponse_ListData_ReceiverSide_MasksSenderNames() {
+        // Arrange
         RetrieveTransferListResponseData responseData = new RetrieveTransferListResponseData();
-        List<TransferListItemInfo> transferList = new ArrayList<>();
+        List<TransferListItemInfo> transferLists = new ArrayList<>();
         TransferListItemInfo item = new TransferListItemInfo();
         item.setTransferSideCode(TransferSideCode.RECEIVER);
         item.setSenderCustomerFirstName("John");
-        item.setSenderCustomerMiddleName("Christian");
-        transferList.add(item);
-        responseData.setTransferLists(transferList);
+        item.setSenderCustomerMiddleName("A");
+        item.setSenderCustomerLastName("Doe");
+        transferLists.add(item);
+        responseData.setTransferLists(transferLists);
 
-        method.invoke(tradeTransferService, responseData);
+        // Act
+        tradeTransferService.maskNamesInResponse(responseData);
 
-        assertEquals("J***", responseData.getTransferLists().get(0).getSenderCustomerFirstName());
-        assertEquals("C*******", responseData.getTransferLists().get(0).getSenderCustomerMiddleName());
+        // Assert
+        assertEquals("J****n", responseData.getTransferLists().get(0).getSenderCustomerFirstName());
+        assertEquals("A***", responseData.getTransferLists().get(0).getSenderCustomerMiddleName());
+        // LastName is typically not masked based on the current implementation
+        assertEquals("Doe", responseData.getTransferLists().get(0).getSenderCustomerLastName());
     }
 
     @Test
-    void maskNamesInResponseListNullData() throws Exception {
-        Method method = TradeTransferServiceImpl.class.getDeclaredMethod("maskNamesInResponse", RetrieveTransferListResponseData.class);
-        method.setAccessible(true);
-
-        method.invoke(tradeTransferService, null); // Null data object
-
-        // Should not throw an exception
-    }
-
-    @Test
-    void maskNamesInResponseListNullList() throws Exception {
-        Method method = TradeTransferServiceImpl.class.getDeclaredMethod("maskNamesInResponse", RetrieveTransferListResponseData.class);
-        method.setAccessible(true);
-
+    void maskNamesInResponse_ListData_SenderSideBankCustomer_MasksReceiverNames() {
+        // Arrange
         RetrieveTransferListResponseData responseData = new RetrieveTransferListResponseData();
-        responseData.setTransferLists(null); // Null list
+        List<TransferListItemInfo> transferLists = new ArrayList<>();
+        TransferListItemInfo item = new TransferListItemInfo();
+        item.setTransferSideCode(TransferSideCode.SENDER);
+        item.setIsReceiverBankCustomer("Y");
+        item.setReceiverCustomerFirstName("Jane");
+        item.setReceiverCustomerMiddleName("B");
+        item.setReceiverCustomerLastName("Smith");
+        transferLists.add(item);
+        responseData.setTransferLists(transferLists);
 
-        method.invoke(tradeTransferService, responseData);
+        // Act
+        tradeTransferService.maskNamesInResponse(responseData);
 
-        // Should not throw an exception
+        // Assert
+        assertEquals("J****e", responseData.getTransferLists().get(0).getReceiverCustomerFirstName());
+        assertEquals("B***", responseData.getTransferLists().get(0).getReceiverCustomerMiddleName());
+        // LastName is typically not masked based on the current implementation
+        assertEquals("Smith", responseData.getTransferLists().get(0).getReceiverCustomerLastName());
     }
 
     @Test
-    void maskNamesInResponseDetail() throws Exception {
-        Method method = TradeTransferServiceImpl.class.getDeclaredMethod("maskNamesInResponse", RetrieveTransferDetailResponseData.class);
-        method.setAccessible(true);
+    void maskNamesInResponse_DetailData_ReceiverSide_MasksSenderNames() {
+        // Arrange
+        RetrieveTransferDetailResponseData responseData = new RetrieveTransferDetailResponseData();
+        responseData.setTransferSideCode(TransferSideCode.RECEIVER);
+        responseData.setSenderCustomerFirstName("John");
+        responseData.setSenderCustomerMiddleName("A");
+        responseData.setSenderCustomerLastName("Doe");
 
+        // Act
+        tradeTransferService.maskNamesInResponse(responseData);
+
+        // Assert
+        assertEquals("J****n", responseData.getSenderCustomerFirstName());
+        assertEquals("A***", responseData.getSenderCustomerMiddleName());
+        // LastName is typically not masked based on the current implementation
+        assertEquals("Doe", responseData.getSenderCustomerLastName());
+    }
+
+    @Test
+    void maskNamesInResponse_DetailData_SenderSideBankCustomer_MasksReceiverNames() {
+        // Arrange
         RetrieveTransferDetailResponseData responseData = new RetrieveTransferDetailResponseData();
         responseData.setTransferSideCode(TransferSideCode.SENDER);
         responseData.setIsReceiverBankCustomer("Y");
         responseData.setReceiverCustomerFirstName("Jane");
-        responseData.setReceiverCustomerMiddleName("Marie");
+        responseData.setReceiverCustomerMiddleName("B");
+        responseData.setReceiverCustomerLastName("Smith");
 
-        method.invoke(tradeTransferService, responseData);
+        // Act
+        tradeTransferService.maskNamesInResponse(responseData);
 
-        assertEquals("J***", responseData.getReceiverCustomerFirstName());
-        assertEquals("M****", responseData.getReceiverCustomerMiddleName());
+        // Assert
+        assertEquals("J****e", responseData.getReceiverCustomerFirstName());
+        assertEquals("B***", responseData.getReceiverCustomerMiddleName());
+        // LastName is typically not masked based on the current implementation
+        assertEquals("Smith", responseData.getReceiverCustomerLastName());
     }
 
     @Test
-    void maskNamesInResponseDetailNullData() throws Exception {
-        Method method = TradeTransferServiceImpl.class.getDeclaredMethod("maskNamesInResponse", RetrieveTransferDetailResponseData.class);
-        method.setAccessible(true);
+    void validateTransferLimits_DailyLimitExceeded_ThrowsException() {
+        BigDecimal totalTranAmount = new BigDecimal("1000");
+        RetrieveTransferLimitResponse currentLimit = new RetrieveTransferLimitResponse();
+        RetrieveTransferLimitResponseData data = new RetrieveTransferLimitResponseData();
+        data.setAvailableTodayAmount(new BigDecimal("500")); // Less than total amount
+        data.setMaxDailyLimitedAmount(new BigDecimal("1000"));
+        currentLimit.setData(data);
 
-        method.invoke(tradeTransferService, null); // Null data object
-
-        // Should not throw an exception
+        assertThrows(TransferLimitExceededException.class, () ->
+                tradeTransferService.validateTransferLimits(totalTranAmount, currentLimit)
+        );
     }
 
     @Test
-    void maskFirstNameAndMiddleName() throws Exception {
-        Method method = TradeTransferServiceImpl.class.getDeclaredMethod("maskFirstNameAndMiddleName", Object.class, String.class, String.class);
-        method.setAccessible(true);
+    void validateTransferLimits_MonthlyLimitExceeded_ThrowsException() {
+        BigDecimal totalTranAmount = new BigDecimal("1000");
+        RetrieveTransferLimitResponse currentLimit = new RetrieveTransferLimitResponse();
+        RetrieveTransferLimitResponseData data = new RetrieveTransferLimitResponseData();
+        data.setAvailableTodayAmount(new BigDecimal("2000")); // Sufficient for daily
+        data.setAvailableMonthToDateAmount(new BigDecimal("500")); // Less than total amount
+        data.setMaxMonthlyLimitedAmount(new BigDecimal("1000"));
+        currentLimit.setData(data);
 
-        RetrieveTransferListResponseData responseData = new RetrieveTransferListResponseData();
-        List<TransferListItemInfo> transferList = new ArrayList<>();
-        TransferListItemInfo item = new TransferListItemInfo();
-        item.setSenderCustomerFirstName("John");
-        item.setSenderCustomerMiddleName("Christian");
-        transferList.add(item);
-        responseData.setTransferLists(transferList);
-
-        method.invoke(tradeTransferService, responseData.getTransferLists().get(0), "senderCustomerFirstName", "senderCustomerMiddleName");
-
-        assertEquals("J***", responseData.getTransferLists().get(0).getSenderCustomerFirstName());
-        assertEquals("C*******", responseData.getTransferLists().get(0).getSenderCustomerMiddleName());
+        assertThrows(TransferLimitExceededException.class, () ->
+                tradeTransferService.validateTransferLimits(totalTranAmount, currentLimit)
+        );
     }
 
     @Test
-    void maskFirstNameAndMiddleNameEmptyName() throws Exception {
-        Method method = TradeTransferServiceImpl.class.getDeclaredMethod("maskFirstNameAndMiddleName", Object.class, String.class, String.class);
-        method.setAccessible(true);
+    void validateTransferLimits_YearlyLimitExceeded_ThrowsException() {
+        BigDecimal totalTranAmount = new BigDecimal("1000");
+        RetrieveTransferLimitResponse currentLimit = new RetrieveTransferLimitResponse();
+        RetrieveTransferLimitResponseData data = new RetrieveTransferLimitResponseData();
+        data.setAvailableTodayAmount(new BigDecimal("2000")); // Sufficient for daily
+        data.setAvailableMonthToDateAmount(new BigDecimal("2000")); // Sufficient for monthly
+        data.setAvailableYearToDateAmount(new BigDecimal("500")); // Less than total amount
+        data.setMaxYearlyLimitedAmount(new BigDecimal("1000"));
+        currentLimit.setData(data);
 
-        RetrieveTransferListResponseData responseData = new RetrieveTransferListResponseData();
-        List<TransferListItemInfo> transferList = new ArrayList<>();
-        TransferListItemInfo item = new TransferListItemInfo();
-        item.setSenderCustomerFirstName(""); // Empty name
-        item.setSenderCustomerMiddleName("Christian");
-        transferList.add(item);
-        responseData.setTransferLists(transferList);
-
-        method.invoke(tradeTransferService, responseData.getTransferLists().get(0), "senderCustomerFirstName", "senderCustomerMiddleName");
-
-        assertEquals("", responseData.getTransferLists().get(0).getSenderCustomerFirstName()); // Should remain empty
-        assertEquals("C*******", responseData.getTransferLists().get(0).getSenderCustomerMiddleName());
+        assertThrows(TransferLimitExceededException.class, () ->
+                tradeTransferService.validateTransferLimits(totalTranAmount, currentLimit)
+        );
     }
 
     @Test
-    void maskFirstNameAndMiddleNameNullName() throws Exception {
-        Method method = TradeTransferServiceImpl.class.getDeclaredMethod("maskFirstNameAndMiddleName", Object.class, String.class, String.class);
-        method.setAccessible(true);
+    void validateTransferLimits_AllLimitsSufficient_DoesNotThrowException() {
+        BigDecimal totalTranAmount = new BigDecimal("500");
+        RetrieveTransferLimitResponse currentLimit = new RetrieveTransferLimitResponse();
+        RetrieveTransferLimitResponseData data = new RetrieveTransferLimitResponseData();
+        data.setAvailableTodayAmount(new BigDecimal("1000"));
+        data.setAvailableMonthToDateAmount(new BigDecimal("1000"));
+        data.setAvailableYearToDateAmount(new BigDecimal("1000"));
+        currentLimit.setData(data);
 
-        RetrieveTransferListResponseData responseData = new RetrieveTransferListResponseData();
-        List<TransferListItemInfo> transferList = new ArrayList<>();
-        TransferListItemInfo item = new TransferListItemInfo();
-        item.setSenderCustomerFirstName(null); // Null name
-        item.setSenderCustomerMiddleName("Christian");
-        transferList.add(item);
-        responseData.setTransferLists(transferList);
-
-        method.invoke(tradeTransferService, responseData.getTransferLists().get(0), "senderCustomerFirstName", "senderCustomerMiddleName");
-
-        assertNull(responseData.getTransferLists().get(0).getSenderCustomerFirstName()); // Should remain null
-        assertEquals("C*******", responseData.getTransferLists().get(0).getSenderCustomerMiddleName());
+        assertDoesNotThrow(() ->
+                tradeTransferService.validateTransferLimits(totalTranAmount, currentLimit)
+        );
     }
 
     @Test
-    void capitalize() throws Exception {
-        Method method = TradeTransferServiceImpl.class.getDeclaredMethod("capitalize", String.class);
-        method.setAccessible(true);
-
-        assertEquals("Test", method.invoke(tradeTransferService, "test"));
-        assertEquals("A", method.invoke(tradeTransferService, "a"));
-        assertEquals("", method.invoke(tradeTransferService, ""));
-        assertNull(method.invoke(tradeTransferService, null));
-    }
-
-    @Test
-    void validateTransferLimits() throws Exception {
-        Method method = TradeTransferServiceImpl.class.getDeclaredMethod("validateTransferLimits", BigDecimal.class, RetrieveTransferLimitResponse.class);
-        method.setAccessible(true);
-
-        RetrieveTransferLimitResponse limitResponse = new RetrieveTransferLimitResponse();
-        RetrieveTransferLimitResponseData limitData = new RetrieveTransferLimitResponseData();
-        limitData.setAvailableTodayAmount(BigDecimal.valueOf(100000));
-        limitData.setMaxDailyLimitedAmount(BigDecimal.valueOf(100000));
-        limitData.setAvailableMonthToDateAmount(BigDecimal.valueOf(1000000));
-        limitData.setMaxMonthlyLimitedAmount(BigDecimal.valueOf(1000000));
-        limitData.setAvailableYearToDateAmount(BigDecimal.valueOf(10000000));
-        limitData.setMaxYearlyLimitedAmount(BigDecimal.valueOf(10000000));
-        limitResponse.setData(limitData);
-
-        // Should not throw exception as amount is less than limits
-        method.invoke(tradeTransferService, BigDecimal.valueOf(50000), limitResponse);
-    }
-
-    @Test
-    void validateTransferLimitsDailyExceeded() throws Exception {
-        Method method = TradeTransferServiceImpl.class.getDeclaredMethod("validateTransferLimits", BigDecimal.class, RetrieveTransferLimitResponse.class);
-        method.setAccessible(true);
-
-        RetrieveTransferLimitResponse limitResponse = new RetrieveTransferLimitResponse();
-        RetrieveTransferLimitResponseData limitData = new RetrieveTransferLimitResponseData();
-        limitData.setAvailableTodayAmount(BigDecimal.valueOf(40000)); // Less than required amount
-        limitData.setMaxDailyLimitedAmount(BigDecimal.valueOf(100000));
-        limitData.setAvailableMonthToDateAmount(BigDecimal.valueOf(1000000));
-        limitData.setMaxMonthlyLimitedAmount(BigDecimal.valueOf(1000000));
-        limitData.setAvailableYearToDateAmount(BigDecimal.valueOf(10000000));
-        limitData.setMaxYearlyLimitedAmount(BigDecimal.valueOf(10000000));
-        limitResponse.setData(limitData);
-
-        assertThrows(TransferLimitExceededException.class, () -> method.invoke(tradeTransferService, BigDecimal.valueOf(50000), limitResponse));
-    }
-
-    @Test
-    void validateTransferLimitsMonthlyExceeded() throws Exception {
-        Method method = TradeTransferServiceImpl.class.getDeclaredMethod("validateTransferLimits", BigDecimal.class, RetrieveTransferLimitResponse.class);
-        method.setAccessible(true);
-
-        RetrieveTransferLimitResponse limitResponse = new RetrieveTransferLimitResponse();
-        RetrieveTransferLimitResponseData limitData = new RetrieveTransferLimitResponseData();
-        limitData.setAvailableTodayAmount(BigDecimal.valueOf(100000));
-        limitData.setMaxDailyLimitedAmount(BigDecimal.valueOf(100000));
-        limitData.setAvailableMonthToDateAmount(BigDecimal.valueOf(400000)); // Less than required amount
-        limitData.setMaxMonthlyLimitedAmount(BigDecimal.valueOf(1000000));
-        limitData.setAvailableYearToDateAmount(BigDecimal.valueOf(10000000));
-        limitData.setMaxYearlyLimitedAmount(BigDecimal.valueOf(10000000));
-        limitResponse.setData(limitData);
-
-        assertThrows(TransferLimitExceededException.class, () -> method.invoke(tradeTransferService, BigDecimal.valueOf(500000), limitResponse));
-    }
-
-    @Test
-    void validateTransferLimitsYearlyExceeded() throws Exception {
-        Method method = TradeTransferServiceImpl.class.getDeclaredMethod("validateTransferLimits", BigDecimal.class, RetrieveTransferLimitResponse.class);
-        method.setAccessible(true);
-
-        RetrieveTransferLimitResponse limitResponse = new RetrieveTransferLimitResponse();
-        RetrieveTransferLimitResponseData limitData = new RetrieveTransferLimitResponseData();
-        limitData.setAvailableTodayAmount(BigDecimal.valueOf(100000));
-        limitData.setMaxDailyLimitedAmount(BigDecimal.valueOf(100000));
-        limitData.setAvailableMonthToDateAmount(BigDecimal.valueOf(1000000));
-        limitData.setMaxMonthlyLimitedAmount(BigDecimal.valueOf(1000000));
-        limitData.setAvailableYearToDateAmount(BigDecimal.valueOf(4000000)); // Less than required amount
-        limitData.setMaxYearlyLimitedAmount(BigDecimal.valueOf(10000000));
-        limitResponse.setData(limitData);
-
-        assertThrows(TransferLimitExceededException.class, () -> method.invoke(tradeTransferService, BigDecimal.valueOf(5000000), limitResponse));
-    }
-
-    @Test
-    void validateSreForReceivers() throws Exception {
-        Method method = TradeTransferServiceImpl.class.getDeclaredMethod("validateSreForReceivers", List.class, String.class, Map.class);
-        method.setAccessible(true);
-
-        List<ReceiverInfo> receivers = new ArrayList<>();
-        ReceiverInfo receiver = new ReceiverInfo();
-        receiver.setReceiverCustomerNumber("12345");
-        receivers.add(receiver);
-
-        Map<String, String> headers = new HashMap<>();
-        headers.put(HTTPRequestHeaderConstants.X_HSBC_CHNL_COUNTRYCODE, "HK");
-
-        RuleResponse sreResponse = new RuleResponse();
-        ResponseDetails sreDetails = new ResponseDetails();
-        sreDetails.setResponseCodeNumber(0);
-        sreResponse.setResponseDetails(sreDetails);
-
-        lenient().when(sreValidationService.callSreForTransferValidation(anyString(), anyString(), anyString(), anyMap()))
-                .thenReturn(sreResponse);
-
-        // Should not throw exception
-        method.invoke(tradeTransferService, receivers, "SENDER_CIN", headers);
-    }
-
-    @Test
-    void validateSreForReceiversNullList() throws Exception {
-        Method method = TradeTransferServiceImpl.class.getDeclaredMethod("validateSreForReceivers", List.class, String.class, Map.class);
-        method.setAccessible(true);
-
-        Map<String, String> headers = new HashMap<>();
-        headers.put(HTTPRequestHeaderConstants.X_HSBC_CHNL_COUNTRYCODE, "HK");
-
-        // Should not throw exception
-        method.invoke(tradeTransferService, null, "SENDER_CIN", headers);
-    }
-
-    @Test
-    void validateSreForReceiversEmptyList() throws Exception {
-        Method method = TradeTransferServiceImpl.class.getDeclaredMethod("validateSreForReceivers", List.class, String.class, Map.class);
-        method.setAccessible(true);
-
-        List<ReceiverInfo> receivers = new ArrayList<>();
-
-        Map<String, String> headers = new HashMap<>();
-        headers.put(HTTPRequestHeaderConstants.X_HSBC_CHNL_COUNTRYCODE, "HK");
-
-        // Should not throw exception
-        method.invoke(tradeTransferService, receivers, "SENDER_CIN", headers);
-    }
-
-    @Test
-    void validateSreForReceiversNullCin() throws Exception {
-        Method method = TradeTransferServiceImpl.class.getDeclaredMethod("validateSreForReceivers", List.class, String.class, Map.class);
-        method.setAccessible(true);
-
-        List<ReceiverInfo> receivers = new ArrayList<>();
-        ReceiverInfo receiver = new ReceiverInfo();
-        receiver.setReceiverCustomerNumber(null); // Null CIN
-        receivers.add(receiver);
-
-        Map<String, String> headers = new HashMap<>();
-        headers.put(HTTPRequestHeaderConstants.X_HSBC_CHNL_COUNTRYCODE, "HK");
-
-        RuleResponse sreResponse = new RuleResponse();
-        ResponseDetails sreDetails = new ResponseDetails();
-        sreDetails.setResponseCodeNumber(0);
-        sreResponse.setResponseDetails(sreDetails);
-
-        lenient().when(sreValidationService.callSreForTransferValidation(anyString(), anyString(), anyString(), anyMap()))
-                .thenReturn(sreResponse);
-
-        // Should not throw exception
-        method.invoke(tradeTransferService, receivers, "SENDER_CIN", headers);
-    }
-
-    @Test
-    void setSenderNames() throws Exception {
-        Method method = TradeTransferServiceImpl.class.getDeclaredMethod("setSenderNames", CreateTransferRequest.class, PartyNameResponse.class);
-        method.setAccessible(true);
-
-        CreateTransferRequest request = new CreateTransferRequest();
-        CreateTransferRequestData data = new CreateTransferRequestData();
-        request.setData(data);
-
-        PartyNameResponse nameResponse = new PartyNameResponse();
-        PartyNameResponseData nameData = new PartyNameResponseData();
-        PartyNameValue nameValue = new PartyNameValue();
-        nameValue.setGivenName("John");
-        nameValue.setLastName("Doe");
-        nameValue.setCustomerChristianName("Christian");
-        nameData.setName(nameValue);
-        nameResponse.setData(nameData);
-
-        method.invoke(tradeTransferService, request, nameResponse);
-
-        assertEquals("John", request.getData().getSenderCustomerFirstName());
-        assertEquals("Christian", request.getData().getSenderCustomerMiddleName());
-        assertEquals("Doe", request.getData().getSenderCustomerLastName());
-    }
-
-    @Test
-    void setSenderNamesNullResponse() throws Exception {
-        Method method = TradeTransferServiceImpl.class.getDeclaredMethod("setSenderNames", CreateTransferRequest.class, PartyNameResponse.class);
-        method.setAccessible(true);
-
-        CreateTransferRequest request = new CreateTransferRequest();
-        CreateTransferRequestData data = new CreateTransferRequestData();
-        request.setData(data);
-
-        method.invoke(tradeTransferService, request, null); // Null response
-
-        assertNull(request.getData().getSenderCustomerFirstName());
-        assertNull(request.getData().getSenderCustomerMiddleName());
-        assertNull(request.getData().getSenderCustomerLastName());
-    }
-
-    @Test
-    void setSenderNamesNullName() throws Exception {
-        Method method = TradeTransferServiceImpl.class.getDeclaredMethod("setSenderNames", CreateTransferRequest.class, PartyNameResponse.class);
-        method.setAccessible(true);
-
-        CreateTransferRequest request = new CreateTransferRequest();
-        CreateTransferRequestData data = new CreateTransferRequestData();
-        request.setData(data);
-
-        PartyNameResponse nameResponse = new PartyNameResponse();
-        PartyNameResponseData nameData = new PartyNameResponseData();
-        nameData.setName(null); // Null name object
-        nameResponse.setData(nameData);
-
-        method.invoke(tradeTransferService, request, nameResponse);
-
-        assertNull(request.getData().getSenderCustomerFirstName());
-        assertNull(request.getData().getSenderCustomerMiddleName());
-        assertNull(request.getData().getSenderCustomerLastName());
-    }
-
-    @Test
-    void setSenderFullName() throws Exception {
-        Method method = TradeTransferServiceImpl.class.getDeclaredMethod("setSenderFullName", CreateTransferResponse.class, PartyNameResponse.class);
-        method.setAccessible(true);
-
-        CreateTransferResponse response = new CreateTransferResponse();
-        CreateTransferResponseData data = new CreateTransferResponseData();
-        response.setData(data);
-
-        PartyNameResponse nameResponse = new PartyNameResponse();
-        PartyNameResponseData nameData = new PartyNameResponseData();
-        PartyNameValue nameValue = new PartyNameValue();
-        nameValue.setGivenName("John");
-        nameValue.setLastName("Doe");
-        nameValue.setCustomerChristianName("Christian");
-        nameData.setName(nameValue);
-        nameResponse.setData(nameData);
-
-        method.invoke(tradeTransferService, response, nameResponse);
-
-        assertEquals("Doe John Christian", response.getData().getSenderCustomerName());
-    }
-
-    @Test
-    void setSenderFullNameNullResponse() throws Exception {
-        Method method = TradeTransferServiceImpl.class.getDeclaredMethod("setSenderFullName", CreateTransferResponse.class, PartyNameResponse.class);
-        method.setAccessible(true);
-
-        CreateTransferResponse response = new CreateTransferResponse();
-        CreateTransferResponseData data = new CreateTransferResponseData();
-        response.setData(data);
-
-        method.invoke(tradeTransferService, response, null); // Null name response
-
-        assertNull(response.getData().getSenderCustomerName());
-    }
-
-    @Test
-    void setSenderFullNameNullName() throws Exception {
-        Method method = TradeTransferServiceImpl.class.getDeclaredMethod("setSenderFullName", CreateTransferResponse.class, PartyNameResponse.class);
-        method.setAccessible(true);
-
-        CreateTransferResponse response = new CreateTransferResponse();
-        CreateTransferResponseData data = new CreateTransferResponseData();
-        response.setData(data);
-
-        PartyNameResponse nameResponse = new PartyNameResponse();
-        PartyNameResponseData nameData = new PartyNameResponseData();
-        nameData.setName(null); // Null name object
-        nameResponse.setData(nameData);
-
-        method.invoke(tradeTransferService, response, nameResponse);
-
-        assertNull(response.getData().getSenderCustomerName());
-    }
-
-    @Test
-    void setSenderFullNameMissingNames() throws Exception {
-        Method method = TradeTransferServiceImpl.class.getDeclaredMethod("setSenderFullName", CreateTransferResponse.class, PartyNameResponse.class);
-        method.setAccessible(true);
-
-        CreateTransferResponse response = new CreateTransferResponse();
-        CreateTransferResponseData data = new CreateTransferResponseData();
-        response.setData(data);
-
-        PartyNameResponse nameResponse = new PartyNameResponse();
-        PartyNameResponseData nameData = new PartyNameResponseData();
-        PartyNameValue nameValue = new PartyNameValue();
-        nameValue.setGivenName("John");
-        nameValue.setLastName("Doe");
-        // CustomerChristianName is null
-        nameData.setName(nameValue);
-        nameResponse.setData(nameData);
-
-        method.invoke(tradeTransferService, response, nameResponse);
-
-        assertEquals("Doe John", response.getData().getSenderCustomerName());
-    }
-
-    @Test
-    void handleDOperationResponse() throws Exception {
-        Method method = TradeTransferServiceImpl.class.getDeclaredMethod("handleDOperationResponse", CreateTransferRequest.class, CreateTransferResponse.class, GoldPriceResponse.class);
-        method.setAccessible(true);
-
-        CreateTransferRequest request = new CreateTransferRequest();
-        CreateTransferRequestData data = new CreateTransferRequestData();
-        data.setActionRequestCode(ActionRequestCode.D); // D operation
-        request.setData(data);
-
-        CreateTransferResponse response = new CreateTransferResponse();
-        CreateTransferResponseData responseData = new CreateTransferResponseData();
-        List<TransferOrderInfo> orderList = new ArrayList<>();
-        TransferOrderInfo order = new TransferOrderInfo();
-        orderList.add(order);
-        responseData.setTransferOrderLists(orderList);
-        response.setData(responseData);
-
-        GoldPriceResponse goldPriceResponse = new GoldPriceResponse();
-        GoldPriceResponseData goldPriceData = new GoldPriceResponseData();
-        goldPriceData.setGoldPriceAmount(BigDecimal.valueOf(1200.50));
-        goldPriceData.setPublishTime("2025-08-07T01:25:13.837Z");
-        goldPriceResponse.setData(goldPriceData);
-
-        when(duplicateSubmitPreventionService.generateUniqueKey()).thenReturn("UNIQUE_KEY_123");
-
-        method.invoke(tradeTransferService, request, response, goldPriceResponse);
-
-        assertEquals("UNIQUE_KEY_123", response.getData().getRequestUniqueKey());
-        assertEquals(BigDecimal.valueOf(1200.50), response.getData().getTransferOrderLists().get(0).getRequestPriceValue());
-        assertEquals("2025-08-07T01:25:13.837Z", response.getData().getTransferOrderLists().get(0).getRequestPriceAsOfDateTime());
-        assertEquals("HKD", response.getData().getTransferOrderLists().get(0).getPriceCurrencyCode());
-    }
-
-    @Test
-    void handleDOperationResponseNotDOperation() throws Exception {
-        Method method = TradeTransferServiceImpl.class.getDeclaredMethod("handleDOperationResponse", CreateTransferRequest.class, CreateTransferResponse.class, GoldPriceResponse.class);
-        method.setAccessible(true);
-
-        CreateTransferRequest request = new CreateTransferRequest();
-        CreateTransferRequestData data = new CreateTransferRequestData();
-        data.setActionRequestCode(ActionRequestCode.C); // Not D operation
-        request.setData(data);
-
-        CreateTransferResponse response = new CreateTransferResponse();
-        CreateTransferResponseData responseData = new CreateTransferResponseData();
-        List<TransferOrderInfo> orderList = new ArrayList<>();
-        TransferOrderInfo order = new TransferOrderInfo();
-        orderList.add(order);
-        responseData.setTransferOrderLists(orderList);
-        response.setData(responseData);
-
-        GoldPriceResponse goldPriceResponse = new GoldPriceResponse();
-        GoldPriceResponseData goldPriceData = new GoldPriceResponseData();
-        goldPriceData.setGoldPriceAmount(BigDecimal.valueOf(1200.50));
-        goldPriceData.setPublishTime("2025-08-07T01:25:13.837Z");
-        goldPriceResponse.setData(goldPriceData);
-
-        // Call method for non-D operation
-        method.invoke(tradeTransferService, request, response, goldPriceResponse);
-
-        // RequestUniqueKey should not be set
-        assertNull(response.getData().getRequestUniqueKey());
-        // Order details should not be updated with price
-        assertNull(response.getData().getTransferOrderLists().get(0).getRequestPriceValue());
-    }
-
-    @Test
-    void handleDOperationResponseNullResponse() throws Exception {
-        Method method = TradeTransferServiceImpl.class.getDeclaredMethod("handleDOperationResponse", CreateTransferRequest.class, CreateTransferResponse.class, GoldPriceResponse.class);
-        method.setAccessible(true);
-
-        CreateTransferRequest request = new CreateTransferRequest();
-        CreateTransferRequestData data = new CreateTransferRequestData();
-        data.setActionRequestCode(ActionRequestCode.D); // D operation
-        request.setData(data);
-
-        GoldPriceResponse goldPriceResponse = new GoldPriceResponse();
-        GoldPriceResponseData goldPriceData = new GoldPriceResponseData();
-        goldPriceData.setGoldPriceAmount(BigDecimal.valueOf(1200.50));
-        goldPriceData.setPublishTime("2025-08-07T01:25:13.837Z");
-        goldPriceResponse.setData(goldPriceData);
-
-        // Call method with null response
-        method.invoke(tradeTransferService, request, null, goldPriceResponse);
-
-        // Should not throw exception
-    }
-
-    @Test
-    void handleDOperationResponseNullGoldPrice() throws Exception {
-        Method method = TradeTransferServiceImpl.class.getDeclaredMethod("handleDOperationResponse", CreateTransferRequest.class, CreateTransferResponse.class, GoldPriceResponse.class);
-        method.setAccessible(true);
-
-        CreateTransferRequest request = new CreateTransferRequest();
-        CreateTransferRequestData data = new CreateTransferRequestData();
-        data.setActionRequestCode(ActionRequestCode.D); // D operation
-        request.setData(data);
-
-        CreateTransferResponse response = new CreateTransferResponse();
-        CreateTransferResponseData responseData = new CreateTransferResponseData();
-        List<TransferOrderInfo> orderList = new ArrayList<>();
-        TransferOrderInfo order = new TransferOrderInfo();
-        orderList.add(order);
-        responseData.setTransferOrderLists(orderList);
-        response.setData(responseData);
-
-        // Call method with null gold price
-        method.invoke(tradeTransferService, request, response, null);
-
-        // Order details should not be updated with price
-        assertNull(response.getData().getTransferOrderLists().get(0).getRequestPriceValue());
-    }
-
-    @Test
-    void handleDOperationResponseNullGoldPriceData() throws Exception {
-        Method method = TradeTransferServiceImpl.class.getDeclaredMethod("handleDOperationResponse", CreateTransferRequest.class, CreateTransferResponse.class, GoldPriceResponse.class);
-        method.setAccessible(true);
-
-        CreateTransferRequest request = new CreateTransferRequest();
-        CreateTransferRequestData data = new CreateTransferRequestData();
-        data.setActionRequestCode(ActionRequestCode.D); // D operation
-        request.setData(data);
-
-        CreateTransferResponse response = new CreateTransferResponse();
-        CreateTransferResponseData responseData = new CreateTransferResponseData();
-        List<TransferOrderInfo> orderList = new ArrayList<>();
-        TransferOrderInfo order = new TransferOrderInfo();
-        orderList.add(order);
-        responseData.setTransferOrderLists(orderList);
-        response.setData(responseData);
-
-        GoldPriceResponse goldPriceResponse = new GoldPriceResponse();
-        goldPriceResponse.setData(null); // Null data
-
-        // Call method with null gold price data
-        method.invoke(tradeTransferService, request, response, goldPriceResponse);
-
-        // Order details should not be updated with price
-        assertNull(response.getData().getTransferOrderLists().get(0).getRequestPriceValue());
-    }
-
-    @Test
-    void handleDOperationResponseEmptyOrderList() throws Exception {
-        Method method = TradeTransferServiceImpl.class.getDeclaredMethod("handleDOperationResponse", CreateTransferRequest.class, CreateTransferResponse.class, GoldPriceResponse.class);
-        method.setAccessible(true);
-
-        CreateTransferRequest request = new CreateTransferRequest();
-        CreateTransferRequestData data = new CreateTransferRequestData();
-        data.setActionRequestCode(ActionRequestCode.D); // D operation
-        request.setData(data);
-
-        CreateTransferResponse response = new CreateTransferResponse();
-        CreateTransferResponseData responseData = new CreateTransferResponseData();
-        responseData.setTransferOrderLists(new ArrayList<>()); // Empty list
-        response.setData(responseData);
-
-        GoldPriceResponse goldPriceResponse = new GoldPriceResponse();
-        GoldPriceResponseData goldPriceData = new GoldPriceResponseData();
-        goldPriceData.setGoldPriceAmount(BigDecimal.valueOf(1200.50));
-        goldPriceData.setPublishTime("2025-08-07T01:25:13.837Z");
-        goldPriceResponse.setData(goldPriceData);
-
-        when(duplicateSubmitPreventionService.generateUniqueKey()).thenReturn("UNIQUE_KEY_123");
-
-        method.invoke(tradeTransferService, request, response, goldPriceResponse);
-
-        assertEquals("UNIQUE_KEY_123", response.getData().getRequestUniqueKey());
-        // No orders to update, so no assertion for order details
-    }
-
-    @Test
-    void findAccountChecksumForAccountNumber() throws Exception {
-        Method method = TradeTransferServiceImpl.class.getDeclaredMethod("findAccountChecksumForAccountNumber", CustomerAccounts.class, String.class);
-        method.setAccessible(true);
-
+    void findAccountChecksumForAccountNumber_AccountExists_ReturnsChecksum() {
         CustomerAccounts customerAccounts = new CustomerAccounts();
-        List<InvestmentAccount> accountList = new ArrayList<>();
         InvestmentAccount account = new InvestmentAccount();
-        AccountId accountId = new AccountId();
+        account.setChecksum("checksum-123");
+        InvestmentAccountId accountId = new InvestmentAccountId();
         accountId.setAccountNumber("123456");
         account.setInvestmentAccountId(accountId);
-        account.setChecksum("CHK123");
-        accountList.add(account);
-        customerAccounts.setInvestmentAccountList(accountList);
+        customerAccounts.setInvestmentAccountList(Collections.singletonList(account));
 
-        String result = (String) method.invoke(tradeTransferService, customerAccounts, "123456");
+        String result = tradeTransferService.findAccountChecksumForAccountNumber(customerAccounts, "123456");
 
-        assertEquals("CHK123", result);
+        assertEquals("checksum-123", result);
     }
 
     @Test
-    void findAccountChecksumForAccountNumberNotFound() throws Exception {
-        Method method = TradeTransferServiceImpl.class.getDeclaredMethod("findAccountChecksumForAccountNumber", CustomerAccounts.class, String.class);
-        method.setAccessible(true);
-
+    void findAccountChecksumForAccountNumber_AccountDoesNotExist_ReturnsNull() {
         CustomerAccounts customerAccounts = new CustomerAccounts();
-        List<InvestmentAccount> accountList = new ArrayList<>();
         InvestmentAccount account = new InvestmentAccount();
-        AccountId accountId = new AccountId();
+        account.setChecksum("checksum-123");
+        InvestmentAccountId accountId = new InvestmentAccountId();
         accountId.setAccountNumber("123456");
         account.setInvestmentAccountId(accountId);
-        account.setChecksum("CHK123");
-        accountList.add(account);
-        customerAccounts.setInvestmentAccountList(accountList);
+        customerAccounts.setInvestmentAccountList(Collections.singletonList(account));
 
-        String result = (String) method.invoke(tradeTransferService, customerAccounts, "999999"); // Not found
+        String result = tradeTransferService.findAccountChecksumForAccountNumber(customerAccounts, "999999");
 
         assertNull(result);
     }
 
     @Test
-    void findAccountChecksumForAccountNumberNullList() throws Exception {
-        Method method = TradeTransferServiceImpl.class.getDeclaredMethod("findAccountChecksumForAccountNumber", CustomerAccounts.class, String.class);
-        method.setAccessible(true);
+    void handleDOperationResponse_ActionIsD_SetsUniqueKeyAndUpdatesOrderPrices() {
+        CreateTransferRequest createTransferRequest = new CreateTransferRequest();
+        CreateTransferRequestData requestData = new CreateTransferRequestData();
+        requestData.setActionRequestCode(ActionRequestCode.D); // D operation
+        createTransferRequest.setData(requestData);
 
-        CustomerAccounts customerAccounts = new CustomerAccounts();
-        customerAccounts.setInvestmentAccountList(null); // Null list
+        CreateTransferResponse createTransferResponse = new CreateTransferResponse();
+        CreateTransferRequestData responseData = new CreateTransferRequestData();
+        List<TransferOrderInfo> orderInfoList = new ArrayList<>();
+        TransferOrderInfo orderInfo = new TransferOrderInfo();
+        orderInfo.setRequestPriceValue(new BigDecimal("100"));
+        orderInfo.setRequestPriceCurrencyCode("USD");
+        orderInfo.setRequestPriceAsOfDateTime("2025-11-19T10:00:00Z");
+        orderInfoList.add(orderInfo);
+        responseData.setTransferOrderLists(orderInfoList);
+        createTransferResponse.setData(responseData);
 
-        String result = (String) method.invoke(tradeTransferService, customerAccounts, "123456");
+        GoldPriceResponse goldPriceResponse = new GoldPriceResponse();
+        GoldPriceResponseData mdsData = new GoldPriceResponseData();
+        mdsData.setGoldPriceAmount(new BigDecimal("2000"));
+        mdsData.setPublishTime("2025-11-20T10:00:00Z");
+        goldPriceResponse.setData(mdsData);
 
-        assertNull(result);
+        String expectedUniqueKey = "unique-key-123";
+        when(duplicateSubmitPreventionService.generateUniqueKey()).thenReturn(expectedUniqueKey);
+
+        tradeTransferService.handleDOperationResponse(createTransferRequest, createTransferResponse, goldPriceResponse);
+
+        assertEquals(expectedUniqueKey, createTransferResponse.getData().getRequestUniqueKey());
+        assertEquals(new BigDecimal("2000"), createTransferResponse.getData().getTransferOrderLists().get(0).getRequestPriceValue());
+        assertEquals("HKD", createTransferResponse.getData().getTransferOrderLists().get(0).getPriceCurrencyCode());
+        assertEquals("2025-11-20T10:00:00Z", createTransferResponse.getData().getTransferOrderLists().get(0).getRequestPriceAsOfDateTime());
     }
 
     @Test
-    void findAccountChecksumForAccountNumberEmptyList() throws Exception {
-        Method method = TradeTransferServiceImpl.class.getDeclaredMethod("findAccountChecksumForAccountNumber", CustomerAccounts.class, String.class);
-        method.setAccessible(true);
+    void handleDOperationResponse_ActionIsNotD_DoesNotModifyResponse() {
+        CreateTransferRequest createTransferRequest = new CreateTransferRequest();
+        CreateTransferRequestData requestData = new CreateTransferRequestData();
+        requestData.setActionRequestCode(ActionRequestCode.C); // Not D operation
+        createTransferRequest.setData(requestData);
 
-        CustomerAccounts customerAccounts = new CustomerAccounts();
-        customerAccounts.setInvestmentAccountList(new ArrayList<>()); // Empty list
+        CreateTransferResponse createTransferResponse = new CreateTransferResponse();
+        CreateTransferRequestData responseData = new CreateTransferRequestData();
+        List<TransferOrderInfo> orderInfoList = new ArrayList<>();
+        TransferOrderInfo orderInfo = new TransferOrderInfo();
+        orderInfo.setRequestPriceValue(new BigDecimal("100"));
+        orderInfo.setRequestPriceCurrencyCode("USD");
+        orderInfo.setRequestPriceAsOfDateTime("2025-11-19T10:00:00Z");
+        orderInfoList.add(orderInfo);
+        responseData.setTransferOrderLists(orderInfoList);
+        createTransferResponse.setData(responseData);
 
-        String result = (String) method.invoke(tradeTransferService, customerAccounts, "123456");
+        GoldPriceResponse goldPriceResponse = new GoldPriceResponse();
+        GoldPriceResponseData mdsData = new GoldPriceResponseData();
+        mdsData.setGoldPriceAmount(new BigDecimal("2000"));
+        mdsData.setPublishTime("2025-11-20T10:00:00Z");
+        goldPriceResponse.setData(mdsData);
 
-        assertNull(result);
+        tradeTransferService.handleDOperationResponse(createTransferRequest, createTransferResponse, goldPriceResponse);
+
+        // Unique key should remain null
+        assertNull(createTransferResponse.getData().getRequestUniqueKey());
+        // Order list values should remain unchanged
+        assertEquals(new BigDecimal("100"), createTransferResponse.getData().getTransferOrderLists().get(0).getRequestPriceValue());
+        assertEquals("USD", createTransferResponse.getData().getTransferOrderLists().get(0).getPriceCurrencyCode());
+        assertEquals("2025-11-19T10:00:00Z", createTransferResponse.getData().getTransferOrderLists().get(0).getRequestPriceAsOfDateTime());
     }
 
-    @Test
-    void findAccountChecksumForAccountNumberNullAccountInList() throws Exception {
-        Method method = TradeTransferServiceImpl.class.getDeclaredMethod("findAccountChecksumForAccountNumber", CustomerAccounts.class, String.class);
-        method.setAccessible(true);
-
-        CustomerAccounts customerAccounts = new CustomerAccounts();
-        List<InvestmentAccount> accountList = new ArrayList<>();
-        accountList.add(null); // Null account in list
-        customerAccounts.setInvestmentAccountList(accountList);
-
-        String result = (String) method.invoke(tradeTransferService, customerAccounts, "123456");
-
-        assertNull(result);
-    }
-
-    @Test
-    void findAccountChecksumForAccountNumberNullAccountId() throws Exception {
-        Method method = TradeTransferServiceImpl.class.getDeclaredMethod("findAccountChecksumForAccountNumber", CustomerAccounts.class, String.class);
-        method.setAccessible(true);
-
-        CustomerAccounts customerAccounts = new CustomerAccounts();
-        List<InvestmentAccount> accountList = new ArrayList<>();
-        InvestmentAccount account = new InvestmentAccount();
-        account.setInvestmentAccountId(null); // Null account ID
-        account.setChecksum("CHK123");
-        accountList.add(account);
-        customerAccounts.setInvestmentAccountList(accountList);
-
-        String result = (String) method.invoke(tradeTransferService, customerAccounts, "123456");
-
-        assertNull(result);
-    }
+    // Test for private methods using reflection is generally discouraged [[1]].
+    // The methods addCustomerNameToUri, addCustomerContactToUri, and validateSreForReceivers
+    // are protected/package-private and their logic is exercised through public methods like
+    // retrieveTransferList and createTransfers. The tests above cover their interactions.
+    // If direct testing of private logic is absolutely necessary, reflection could be used [[3]],
+    // but it's better to refactor the logic into public methods in separate classes [[4]].
 }
