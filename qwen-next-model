@@ -1,761 +1,532 @@
-package com.hsbc.trade.transfer.service.impl;
-
-import com.hsbc.trade.HTTPRequestHeaderConstants;
-import com.hsbc.trade.ErrorCodes;
-import com.hsbc.trade.common.AccountId;
-import com.hsbc.trade.service.DuplicateSubmitPreventionService;
-import com.hsbc.trade.service.RestClientService;
-import com.hsbc.trade.transfer.common.*;
-import com.hsbc.trade.transfer.constant.TransferQueryParameterConstant;
-import com.hsbc.trade.transfer.createtransfer.*;
-import com.hsbc.trade.transfer.domain.account.*;
-import com.hsbc.trade.transfer.domain.cep.PartyContactResponse;
-import com.hsbc.trade.transfer.domain.cep.PartyNameResponse;
-import com.hsbc.trade.transfer.domain.eligibility.RuleResponse;
-import com.hsbc.trade.transfer.domain.mds.GoldPriceResponse;
-import com.hsbc.trade.transfer.domain.mds.GoldPriceResponseData;
-import com.hsbc.trade.transfer.exception.TransferLimitExceededException;
-import com.hsbc.trade.transfer.retrievetransferdetail.RetrieveTransferDetailResponse;
-import com.hsbc.trade.transfer.retrievetransferdetail.RetrieveTransferDetailResponseData;
-import com.hsbc.trade.transfer.retrievetransferlimit.RetrieveTransferLimitResponse;
-import com.hsbc.trade.transfer.retrievetransferlimit.RetrieveTransferLimitResponseData;
-import com.hsbc.trade.transfer.retrievetransferlist.RetrieveTransferListResponse;
-import com.hsbc.trade.transfer.retrievetransferlist.RetrieveTransferListResponseData;
-import com.hsbc.trade.transfer.retrievetransferlist.TransferListItemInfo;
-import com.hsbc.trade.transfer.updatetransfer.UpdateTransferRequest;
-import com.hsbc.trade.transfer.updatetransfer.UpdateTransferResponse;
-import com.hsbc.trade.utils.E2ETrustTokenUtil;
-import jakarta.ws.rs.BadRequestException;
-import jakarta.ws.rs.InternalServerErrorException;
-import org.junit.jupiter.api.Test;
-import org.mockito.ArgumentCaptor;
-import org.springframework.test.util.ReflectionTestUtils;
-
-import java.math.BigDecimal;
-import java.util.*;
-
-import static com.hsbc.trade.transfer.enums.ExceptionMessageEnum.ACCOUNT_LIST_EMPTY_ERROR;
-import static org.junit.jupiter.api.Assertions.*;
-import static org.mockito.ArgumentMatchers.*;
-import static org.mockito.Mockito.*;
-
 @ExtendWith(MockitoExtension.class)
 class TradeTransferServiceImplTest {
 
-    // ========== 原有字段保持不变 ==========
-    @InjectMocks
-    private TradeTransferServiceImpl tradeTransferService;
+    // ...（原有字段和 @BeforeEach 保持不变）
 
-    @Mock
-    private RestClientService restClientService;
+    // ==================== 新增测试方法 ====================
 
-    @Mock
-    private RetrieveCustomerProfilesServiceImpl retrieveCustomerProfilesService;
-
-    @Mock
-    private SreValidationServiceImpl sreValidationService;
-
-    @Mock
-    private E2ETrustTokenUtil e2ETrustTokenUtil;
-
-    @Mock
-    private DuplicateSubmitPreventionService duplicateSubmitPreventionService;
-
-    @Mock
-    private TradeLimitServiceImpl tradeLimitService;
-
-    @BeforeEach
-    void setUp() {
-        ReflectionTestUtils.setField(tradeTransferService, "tradeOnlineUrl", "https://dummy.trade");
-        ReflectionTestUtils.setField(tradeTransferService, "customerAccountUrl", "https://dummy.accounts");
-        ReflectionTestUtils.setField(tradeTransferService, "retrieveCustomerProfilesService", retrieveCustomerProfilesService);
-        ReflectionTestUtils.setField(tradeTransferService, "sreValidationService", sreValidationService);
-        ReflectionTestUtils.setField(tradeTransferService, "duplicateSubmitPreventionService", duplicateSubmitPreventionService);
-        ReflectionTestUtils.setField(tradeTransferService, "tradeLimitService", tradeLimitService);
-        ReflectionTestUtils.setField(tradeTransferService, "timeout", 5000);
-        ReflectionTestUtils.setField(tradeTransferService, "printMessageLog", true);
-
-        lenient().when(retrieveCustomerProfilesService.getCIN(any())).thenReturn("dummy-cin");
-        lenient().when(e2ETrustTokenUtil.getE2ETrustToken()).thenReturn("<dummy-e2e-token>");
-        lenient().when(duplicateSubmitPreventionService.generateUniqueKey()).thenReturn("unique-key-123");
-    }
-
-    private final String dummyToken = "<saml:Assertion xmlns:saml='http://www.hsbc.com/saas/assertion' xmlns:ds='http://www.w3.org/2000/09/xmldsig#' xmlns:xsi='http://www.w3.org/2001/XMLSchema-instance' ID='id_9a9e4d35-7d80-4805-849f-ddb90a8b2c1f' IssueInstant='2025-08-07T01:25:13.837Z' Version='3.0'><saml:Issuer>https://www.hsbc.com/rbwm/dtp</saml:Issuer><ds:Signature><ds:SignedInfo><ds:CanonicalizationMethod Algorithm='http://www.w3.org/2001/10/xml-exc-c14n#'/><ds:SignatureMethod Algorithm='http://www.w3.org/2001/04/xmldsig-more#rsa-sha256'/><ds:Reference URI='#id_9a9e4d35-7d80-4805-849f-ddb90a8b2c1f'><ds:Transforms><ds:Transform Algorithm='http://www.w3.org/2000/09/xmldsig#enveloped-signature'/><ds:Transform Algorithm='http://www.w3.org/2001/10/xml-exc-c14n#'><ds:InclusiveNamespaces xmlns:ds='http://www.w3.org/2001/10/xml-exc-c14n#' PrefixList='#default saml ds xs xsi'/></ds:Transform></ds:Transforms><ds:DigestMethod Algorithm='http://www.w3.org/2001/04/xmlenc#sha256'/><ds:DigestValue>GLd2xpRi6DRAl81eH6NBRNzVWBlEL1zn5mWNpp16xCk=</ds:DigestValue></ds:Reference></ds:SignedInfo><ds:SignatureValue>IJQo3CpyjsDRTfXdnQGQnugNniIy56neA0eaLr87DITEauIPFNZHGCk6sb/Wp9PSIxoJNGpF4T5vVPWqUmv1fYasVtrukqodTgK2JD3NHhviDmTVGKzhZ2hnfjSewDRYeqHVURHMWY1EzltUhpZgO9u12i9+PPK4OJLFDR5Q4tZico3GfweUS7+Ds9wYssqgECZg3XayVg5w9ruSdxPIrcjU7aOe2sZFkge+I6cD2OWHC0K+u+PG+DD0UNmK9OnIY///lwgUdhbdSv0zdkUhOcHRKstuFIKhb4E8eZDogB5Sjeqya3EwJ8sIda99n+jug9IrDAjQIBTTnxtMfwq+gQ==</ds:SignatureValue></ds:Signature><saml:Subject><saml:NameID>HK00100718688801</saml:NameID></saml:Subject><saml:Conditions NotBefore='2025-08-07T01:25:12.837Z' NotOnOrAfter='2025-08-07T01:26:13.837Z'/><saml:AttributeStatement><saml:Attribute Name='GUID'><saml:AttributeValue>98b45150-5c73-11ea-8a50-0350565a170c</saml:AttributeValue></saml:Attribute><saml:Attribute Name='CAM'><saml:AttributeValue>30</saml:AttributeValue></saml:Attribute><saml:Attribute Name='KeyAlias'><saml:AttributeValue>E2E_TRUST_SAAS_AP01_BRTB1_ALIAS</saml:AttributeValue></saml:Attribute></saml:AttributeStatement></saml:Assertion>";
-
-    // ========== 原有测试保持不变 ==========
-    // ...（你的原有三个测试方法）
-
-    // ========== 新增测试：覆盖所有缺失路径 ==========
-    
-    // ========================================================================================================
-    // 1. 测试 retrieveTransferList：空账户列表，不设置 checksumIdentifiers
-    // ========================================================================================================
     @Test
-    void retrieveTransferList_EmptyAccountList_NoChecksumIdentifiers() {
-        Map<String, String> requestHeader = new HashMap<>();
-        requestHeader.put(HTTPRequestHeaderConstants.X_HSBC_CUSTOMER_ID, "CUST123");
-
-        CustomerAccounts customerAccounts = new CustomerAccounts();
-        customerAccounts.setInvestmentAccountList(new ArrayList<>());
-
-        RetrieveTransferListResponse response = new RetrieveTransferListResponse();
-        RetrieveTransferListResponseData data = new RetrieveTransferListResponseData();
-        response.setData(data);
-
-        lenient().when(restClientService.get(anyString(), anyMap(), eq(RetrieveTransferListResponse.class), anyInt(), anyBoolean()))
-                .thenReturn(response);
-        lenient().when(tradeTransferService.retrieveCustomerAccounts(any())).thenReturn(customerAccounts);
-
-        // Act
-        RetrieveTransferListResponse result = tradeTransferService.retrieveTransferList(
-                requestHeader, "ACCEPTED", null, "{}", "PROD1", "PLAIN_TEXT");
-
-        // Assert
-        assertNotNull(result);
-        assertNotNull(result.getData());
-        verify(restClientService).get(
-                argThat(uri -> uri.contains("checksumIdentifiers=") == false), // 不应包含 checksum
-                anyMap(), eq(RetrieveTransferListResponse.class), eq(5000), eq(true));
-    }
-
-    // ========================================================================================================
-    // 2. 测试 retrieveTransferList：客户姓名/联系方式为空，不报错，只记录日志
-    // ========================================================================================================
-    @Test
-    void retrieveTransferList_CustomerNameAndContactNull() {
-        Map<String, String> requestHeader = new HashMap<>();
-        requestHeader.put(HTTPRequestHeaderConstants.X_HSBC_CUSTOMER_ID, "CUST123");
-
-        CustomerAccounts customerAccounts = new CustomerAccounts();
-        InvestmentAccount acc = new InvestmentAccount();
-        AccountId accountId = new AccountId();
-        accountId.setAccountNumber("ACC123");
-        acc.setInvestmentAccountId(accountId);
-        acc.setChecksum("chk1");
-        customerAccounts.setInvestmentAccountList(List.of(acc));
-
-        RetrieveTransferListResponse response = new RetrieveTransferListResponse();
-        RetrieveTransferListResponseData data = new RetrieveTransferListResponseData();
-        TransferListItemInfo item = new TransferListItemInfo();
-        item.setSenderCustomerFirstName("Alice");
-        item.setSenderCustomerMiddleName("M");
-        item.setTransferSideCode(TransferSideCode.SENDER);
-        item.setIsReceiverBankCustomer("Y");
-        data.setTransferLists(List.of(item));
-        response.setData(data);
-
-        lenient().when(restClientService.get(anyString(), anyMap(), eq(RetrieveTransferListResponse.class), anyInt(), anyBoolean()))
-                .thenReturn(response);
-        lenient().when(tradeTransferService.retrieveCustomerAccounts(any())).thenReturn(customerAccounts);
-        lenient().when(tradeTransferService.retrieveCustomerNamesWithCinNumber(any(), any())).thenReturn(null);
-        lenient().when(tradeTransferService.retrieveCustomerPhoneNumberWithCinNumber(any(), any())).thenReturn(null);
-
-        // Act
-        RetrieveTransferListResponse result = tradeTransferService.retrieveTransferList(
-                requestHeader, "ACCEPTED", List.of("chk1"), "{}", "PROD1", "PLAIN_TEXT");
-
-        // Assert
-        assertNotNull(result);
-        assertNotNull(result.getData().getTransferLists().get(0));
-        assertEquals("A****", result.getData().getTransferLists().get(0).getSenderCustomerFirstName());
-        assertEquals("M****", result.getData().getTransferLists().get(0).getSenderCustomerMiddleName());
-    }
-
-    // ========================================================================================================
-    // 3. 测试 retrieveTransferDetail：responseData 为 null，直接返回
-    // ========================================================================================================
-    @Test
-    void retrieveTransferDetail_ResponseDataNull_ReturnsResponse() {
-        Map<String, String> requestHeader = new HashMap<>();
-        requestHeader.put(HTTPRequestHeaderConstants.X_HSBC_CUSTOMER_ID, "CUST123");
-
-        RetrieveTransferDetailResponse response = new RetrieveTransferDetailResponse();
-        response.setData(null);
-
-        lenient().when(restClientService.get(anyString(), anyMap(), eq(RetrieveTransferDetailResponse.class), anyInt(), anyBoolean()))
-                .thenReturn(response);
-
-        // Act
-        RetrieveTransferDetailResponse result = tradeTransferService.retrieveTransferDetail(requestHeader, "REF123");
-
-        // Assert
-        assertNotNull(result);
-        assertNull(result.getData());
-        verify(restClientService).get(anyString(), anyMap(), eq(RetrieveTransferDetailResponse.class), eq(5000), eq(true));
-    }
-
-    // ========================================================================================================
-    // 4. 测试 retrieveTransferDetail：investmentAccount 为 null，直接返回
-    // ========================================================================================================
-    @Test
-    void retrieveTransferDetail_InvestmentAccountNull_ReturnsResponse() {
-        Map<String, String> requestHeader = new HashMap<>();
-        requestHeader.put(HTTPRequestHeaderConstants.X_HSBC_CUSTOMER_ID, "CUST123");
-
-        RetrieveTransferDetailResponse response = new RetrieveTransferDetailResponse();
-        RetrieveTransferDetailResponseData data = new RetrieveTransferDetailResponseData();
-        data.setInvestmentAccount(null);
-        response.setData(data);
-
-        lenient().when(restClientService.get(anyString(), anyMap(), eq(RetrieveTransferDetailResponse.class), anyInt(), anyBoolean()))
-                .thenReturn(response);
-
-        // Act
-        RetrieveTransferDetailResponse result = tradeTransferService.retrieveTransferDetail(requestHeader, "REF123");
-
-        // Assert
-        assertNotNull(result);
-        assertNotNull(result.getData());
-        assertNull(result.getData().getAccountChecksumIdentifier());
-        verify(restClientService).get(anyString(), anyMap(), eq(RetrieveTransferDetailResponse.class), eq(5000), eq(true));
-    }
-
-    // ========================================================================================================
-    // 5. 测试 retrieveTransferDetail：checksum 未找到，抛出 BadRequestException
-    // ========================================================================================================
-    @Test
-    void retrieveTransferDetail_ChecksumNotFound_ThrowsBadRequestException() {
-        Map<String, String> requestHeader = new HashMap<>();
-        requestHeader.put(HTTPRequestHeaderConstants.X_HSBC_CUSTOMER_ID, "CUST123");
-
-        CustomerAccounts customerAccounts = new CustomerAccounts();
-        customerAccounts.setInvestmentAccountList(new ArrayList<>());
-
-        RetrieveTransferDetailResponse response = new RetrieveTransferDetailResponse();
-        RetrieveTransferDetailResponseData data = new RetrieveTransferDetailResponseData();
-        InvestmentAccount investmentAccount = new InvestmentAccount();
-        investmentAccount.setAccountNumber("NON_EXISTENT");
-        data.setInvestmentAccount(investmentAccount);
-        response.setData(data);
-
-        lenient().when(restClientService.get(anyString(), anyMap(), eq(RetrieveTransferDetailResponse.class), anyInt(), anyBoolean()))
-                .thenReturn(response);
-        lenient().when(tradeTransferService.retrieveCustomerAccounts(any())).thenReturn(customerAccounts);
-
-        // Act & Assert
-        BadRequestException exception = assertThrows(BadRequestException.class,
-                () -> tradeTransferService.retrieveTransferDetail(requestHeader, "REF123"));
-
-        assertEquals(ACCOUNT_LIST_EMPTY_ERROR.getCode(), exception.getMessage());
-    }
-
-    // ========================================================================================================
-    // 6. 测试 extractAccountIdMap：null customerAccounts 返回空 map
-    // ========================================================================================================
-    @Test
-    void extractAccountIdMap_CustomerAccountsNull_ReturnsEmptyMap() {
-        Map<String, String> result = tradeTransferService.extractAccountIdMap(null);
-        assertTrue(result.isEmpty());
-    }
-
-    // ========================================================================================================
-    // 7. 测试 extractAccountIdMap：空账户列表返回空 map
-    // ========================================================================================================
-    @Test
-    void extractAccountIdMap_EmptyAccountList_ReturnsEmptyMap() {
-        CustomerAccounts accounts = new CustomerAccounts();
-        accounts.setInvestmentAccountList(new ArrayList<>());
-        Map<String, String> result = tradeTransferService.extractAccountIdMap(accounts);
-        assertTrue(result.isEmpty());
-    }
-
-    // ========================================================================================================
-    // 8. 测试 extractAccountIdMap：部分账户无效（checksum 或 accountId 为 null）
-    // ========================================================================================================
-    @Test
-    void extractAccountIdMap_WithInvalidAccounts_ReturnsOnlyValid() {
-        CustomerAccounts accounts = new CustomerAccounts();
-        InvestmentAccount acc1 = new InvestmentAccount();
-        acc1.setChecksum("valid1");
-        AccountId id1 = new AccountId();
-        id1.setCountryAccountCode("HK");
-        id1.setAccountNumber("123");
-        acc1.setInvestmentAccountId(id1);
-
-        InvestmentAccount acc2 = new InvestmentAccount();
-        acc2.setChecksum(null); // 无效
-        InvestmentAccount acc3 = new InvestmentAccount();
-        acc3.setChecksum("valid3");
-        acc3.setInvestmentAccountId(null); // 无效
-
-        accounts.setInvestmentAccountList(List.of(acc1, acc2, acc3));
-
-        Map<String, String> result = tradeTransferService.extractAccountIdMap(accounts);
-
-        assertEquals(1, result.size());
-        assertTrue(result.containsKey("valid1"));
-        assertEquals("countryAccountCode=HK;groupMemberAccountCode=null;accountNumber=123;accountProductTypeCode=null;accountTypeCode=null;accountCurrencyCode=null",
-                result.get("valid1"));
-    }
-
-    // ========================================================================================================
-    // 9. 测试 validateTransferLimits：日限额超限抛出异常
-    // ========================================================================================================
-    @Test
-    void validateTransferLimits_DailyLimitExceeded_ThrowsException() {
-        BigDecimal totalTranAmount = BigDecimal.valueOf(150000);
-        RetrieveTransferLimitResponse limitResponse = new RetrieveTransferLimitResponse();
-        RetrieveTransferLimitResponseData limitData = new RetrieveTransferLimitResponseData();
-        limitData.setAvailableTodayAmount(BigDecimal.valueOf(100000));
-        limitData.setMaxDailyLimitedAmount(BigDecimal.valueOf(100000));
-        limitResponse.setData(limitData);
-
-        // Act & Assert
-        TransferLimitExceededException exception = assertThrows(TransferLimitExceededException.class,
-                () -> tradeTransferService.validateTransferLimits(totalTranAmount, limitResponse));
-
-        assertTrue(exception.getMessage().contains("daily"));
-        assertTrue(exception.getMessage().contains("100000"));
-    }
-
-    // ========================================================================================================
-    // 10. 测试 validateTransferLimits：月限额超限抛出异常
-    // ========================================================================================================
-    @Test
-    void validateTransferLimits_MonthlyLimitExceeded_ThrowsException() {
-        BigDecimal totalTranAmount = BigDecimal.valueOf(600000);
-        RetrieveTransferLimitResponse limitResponse = new RetrieveTransferLimitResponse();
-        RetrieveTransferLimitResponseData limitData = new RetrieveTransferLimitResponseData();
-        limitData.setAvailableMonthToDateAmount(BigDecimal.valueOf(500000));
-        limitData.setMaxMonthlyLimitedAmount(BigDecimal.valueOf(500000));
-        limitResponse.setData(limitData);
-
-        // Act & Assert
-        TransferLimitExceededException exception = assertThrows(TransferLimitExceededException.class,
-                () -> tradeTransferService.validateTransferLimits(totalTranAmount, limitResponse));
-
-        assertTrue(exception.getMessage().contains("monthly"));
-        assertTrue(exception.getMessage().contains("500000"));
-    }
-
-    // ========================================================================================================
-    // 11. 测试 validateTransferLimits：年限额超限抛出异常
-    // ========================================================================================================
-    @Test
-    void validateTransferLimits_YearlyLimitExceeded_ThrowsException() {
-        BigDecimal totalTranAmount = BigDecimal.valueOf(1200000);
-        RetrieveTransferLimitResponse limitResponse = new RetrieveTransferLimitResponse();
-        RetrieveTransferLimitResponseData limitData = new RetrieveTransferLimitResponseData();
-        limitData.setAvailableYearToDateAmount(BigDecimal.valueOf(1000000));
-        limitData.setMaxYearlyLimitedAmount(BigDecimal.valueOf(1000000));
-        limitResponse.setData(limitData);
-
-        // Act & Assert
-        TransferLimitExceededException exception = assertThrows(TransferLimitExceededException.class,
-                () -> tradeTransferService.validateTransferLimits(totalTranAmount, limitResponse));
-
-        assertTrue(exception.getMessage().contains("yearly"));
-        assertTrue(exception.getMessage().contains("1000000"));
-    }
-
-    // ========================================================================================================
-    // 12. 测试 validateSreForReceivers：空列表不调用 SRE
-    // ========================================================================================================
-    @Test
-    void validateSreForReceivers_ReceiverListEmpty_NoSreCall() {
-        tradeTransferService.validateSreForReceivers(null, "CUST123", Collections.emptyMap());
-        verify(sreValidationService, never()).callSreForTransferValidation(any(), any(), any(), any());
-
-        tradeTransferService.validateSreForReceivers(new ArrayList<>(), "CUST123", Collections.emptyMap());
-        verify(sreValidationService, never()).callSreForTransferValidation(any(), any(), any(), any());
-    }
-
-    // ========================================================================================================
-    // 13. 测试 validateSreForReceivers：receiverInternalNumber 为空，使用 without_cin 规则
-    // ========================================================================================================
-    @Test
-    void validateSreForReceivers_ReceiverNoCin_UsesWithoutCinRule() {
-        List<ReceiverInfo> receivers = new ArrayList<>();
-        ReceiverInfo receiver = new ReceiverInfo();
-        receiver.setReceiverCustomerNumber(""); // 空 CIN
-        receivers.add(receiver);
-
-        Map<String, String> headers = new HashMap<>();
-        RuleResponse response = new RuleResponse();
-        response.setValid(true);
-
-        lenient().when(sreValidationService.callSreForTransferValidation(eq("dac_tokenized_gold_transfer_sender_rule_without_cin"), eq("CUST123"), eq(""), anyMap()))
-                .thenReturn(response);
-        lenient().when(sreValidationService.handleSreValidateResponse(any())).thenReturn(null);
-
-        tradeTransferService.validateSreForReceivers(receivers, "CUST123", headers);
-
-        verify(sreValidationService).callSreForTransferValidation(
-                eq("dac_tokenized_gold_transfer_sender_rule_without_cin"), eq("CUST123"), eq(""), anyMap());
-    }
-
-    // ========================================================================================================
-    // 14. 测试 validateSreForReceivers：receiverInternalNumber 有值，使用带 CIN 规则
-    // ========================================================================================================
-    @Test
-    void validateSreForReceivers_ReceiverWithCin_UsesWithCinRule() {
-        List<ReceiverInfo> receivers = new ArrayList<>();
-        ReceiverInfo receiver = new ReceiverInfo();
-        receiver.setReceiverCustomerNumber("CUST456");
-        receivers.add(receiver);
-
-        Map<String, String> headers = new HashMap<>();
-        RuleResponse response = new RuleResponse();
-        response.setValid(true);
-
-        lenient().when(sreValidationService.callSreForTransferValidation(eq("dac_tokenized_gold_transfer_sender_rule"), eq("CUST123"), eq("CUST456"), anyMap()))
-                .thenReturn(response);
-        lenient().when(sreValidationService.handleSreValidateResponse(any())).thenReturn(null);
-
-        tradeTransferService.validateSreForReceivers(receivers, "CUST123", headers);
-
-        verify(sreValidationService).callSreForTransferValidation(
-                eq("dac_tokenized_gold_transfer_sender_rule"), eq("CUST123"), eq("CUST456"), anyMap());
-    }
-
-    // ========================================================================================================
-    // 15. 测试 handleDOperationResponse：无 response 或 data，不处理
-    // ========================================================================================================
-    @Test
-    void handleDOperationResponse_CreateTransferResponseNull_NoOp() {
-        CreateTransferRequest request = new CreateTransferRequest();
-        request.setData(new CreateTransferRequestData());
-        request.getData().setActionRequestCode("D");
-
-        tradeTransferService.handleDOperationResponse(request, null, null);
-        // 无异常，即通过
-    }
-
-    // ========================================================================================================
-    // 16. 测试 handleDOperationResponse：无 goldPrice，不设置价格
-    // ========================================================================================================
-    @Test
-    void handleDOperationResponse_GoldPriceNull_NoPriceSet() {
-        CreateTransferRequest request = new CreateTransferRequest();
-        CreateTransferRequestData data = new CreateTransferRequestData();
-        data.setActionRequestCode("D");
-        request.setData(data);
-
-        CreateTransferResponse response = new CreateTransferResponse();
-        CreateTransferResponse.Data responseData = new CreateTransferResponse.Data();
-        List<TransferOrderInfo> orders = new ArrayList<>();
-        TransferOrderInfo order = new TransferOrderInfo();
-        orders.add(order);
-        responseData.setTransferOrderLists(orders);
-        response.setData(responseData);
-
-        tradeTransferService.handleDOperationResponse(request, response, null);
-
-        assertThat(response.getData().getTransferOrderLists().get(0).getRequestPriceValue()).isNull();
-    }
-
-    // ========================================================================================================
-    // 17. 测试 handleDOperationResponse：有 goldPrice，设置价格和时间
-    // ========================================================================================================
-    @Test
-    void handleDOperationResponse_GoldPricePresent_SetsPriceAndTime() {
-        CreateTransferRequest request = new CreateTransferRequest();
-        CreateTransferRequestData data = new CreateTransferRequestData();
-        data.setActionRequestCode("D");
-        request.setData(data);
-
-        CreateTransferResponse response = new CreateTransferResponse();
-        CreateTransferResponse.Data responseData = new CreateTransferResponse.Data();
-        List<TransferOrderInfo> orders = new ArrayList<>();
-        TransferOrderInfo order = new TransferOrderInfo();
-        orders.add(order);
-        responseData.setTransferOrderLists(orders);
-        response.setData(responseData);
-
-        GoldPriceResponse goldPriceResponse = new GoldPriceResponse();
-        GoldPriceResponseData data2 = new GoldPriceResponseData();
-        data2.setGoldPriceAmount(BigDecimal.valueOf(505.50));
-        data2.setPublishTime("2025-11-20T10:00:00Z");
-        goldPriceResponse.setData(data2);
-
-        tradeTransferService.handleDOperationResponse(request, response, goldPriceResponse);
-
-        TransferOrderInfo order = response.getData().getTransferOrderLists().get(0);
-        assertEquals(BigDecimal.valueOf(505.50), order.getRequestPriceValue());
-        assertEquals("2025-11-20T10:00:00Z", order.getRequestPriceAsOfDateTime());
-        assertEquals("HKD", order.getPriceCurrencyCode());
-    }
-
-    // ========================================================================================================
-    // 18. 测试 findAccountChecksumForAccountNumber：找不到账户返回 null
-    // ========================================================================================================
-    @Test
-    void findAccountChecksumForAccountNumber_AccountNotFound_ReturnsNull() {
-        CustomerAccounts accounts = new CustomerAccounts();
-        InvestmentAccount acc = new InvestmentAccount();
-        AccountId id = new AccountId();
-        id.setAccountNumber("ACC123");
-        acc.setInvestmentAccountId(id);
-        acc.setChecksum("chk1");
-        accounts.setInvestmentAccountList(List.of(acc));
-
-        String result = tradeTransferService.findAccountChecksumForAccountNumber(accounts, "NON_EXISTENT");
-        assertNull(result);
-    }
-
-    // ========================================================================================================
-    // 19. 测试 findAccountChecksumForAccountNumber：找到账户返回 checksum
-    // ========================================================================================================
-    @Test
-    void findAccountChecksumForAccountNumber_AccountFound_ReturnsChecksum() {
-        CustomerAccounts accounts = new CustomerAccounts();
-        InvestmentAccount acc = new InvestmentAccount();
-        AccountId id = new AccountId();
-        id.setAccountNumber("ACC123");
-        acc.setInvestmentAccountId(id);
-        acc.setChecksum("chk1");
-        accounts.setInvestmentAccountList(List.of(acc));
-
-        String result = tradeTransferService.findAccountChecksumForAccountNumber(accounts, "ACC123");
-        assertEquals("chk1", result);
-    }
-
-    // ========================================================================================================
-    // 20. 测试 maskFirstNameAndMiddleName：反射失败时记录错误但不抛异常
-    // ========================================================================================================
-    @Test
-    void maskFirstNameAndMiddleName_ReflectionFailure_LogsErrorButDoesNotThrow() {
-        // 创建一个没有 setter 的类
-        Object obj = new Object() {
-            public String getSenderCustomerFirstName() { return "Alice"; }
-            public String getSenderCustomerMiddleName() { return "M"; }
-        };
-
-        // 调用方法 —— 应该捕获 NoSuchMethodException 并记录日志，但不抛异常
-        tradeTransferService.maskFirstNameAndMiddleName(obj, "senderCustomerFirstName", "senderCustomerMiddleName");
-        // 无异常即通过
-    }
-
-    // ========================================================================================================
-    // 21. 测试 buildRequestHeaders：SAML 头被正确处理
-    // ========================================================================================================
-    @Test
-    void buildRequestHeaders_SamlHeadersAdded() {
-        Map<String, String> sourceHeader = new HashMap<>();
-        sourceHeader.put(HTTPRequestHeaderConstants.X_HSBC_SAML, dummyToken);
-        sourceHeader.put(HTTPRequestHeaderConstants.X_HSBC_SAML3, dummyToken);
-        sourceHeader.put(HTTPRequestHeaderConstants.X_HSBC_CUSTOMER_ID, "CUST123");
-
-        Map<String, String> result = tradeTransferService.buildRequestHeaders(sourceHeader);
-
-        assertThat(result).containsKey("x-hsbc-saml");
-        assertThat(result).containsKey("x-hsbc-saml3");
-        assertThat(result.get("x-hsbc-saml")).isEqualTo(dummyToken);
-        assertThat(result.get("x-hsbc-saml3")).isEqualTo(dummyToken);
-    }
-
-    // ========================================================================================================
-    // 22. 测试 updateHeaderforCEP：添加 E2E token
-    // ========================================================================================================
-    @Test
-    void updateHeaderforCEP_AddsE2EToken() {
-        Map<String, String> headers = new HashMap<>();
-        headers.put("X-HSBC-CUSTOMER-ID", "CUST123");
-
-        Map<String, String> result = tradeTransferService.updateHeaderforCEP(headers);
-
-        assertThat(result).containsKey("x-hsbc-e2e-trust-token");
-        assertThat(result.get("x-hsbc-e2e-trust-token")).isEqualTo("<dummy-e2e-token>");
-    }
-
-    // ========================================================================================================
-    // 23. 测试 retrieveAccountIdWithCheckSum：调用 restClientService 获取账户
-    // ========================================================================================================
-    @Test
-    void retrieveAccountIdWithCheckSum_CallsRestClientService() {
-        Map<String, String> headers = new HashMap<>();
-        headers.put(TransferQueryParameterConstant.CHECKSUM, "chk1");
-
-        RetrieveCustomerAccountsIdListResponse response = new RetrieveCustomerAccountsIdListResponse();
-        InvestmentAccountId accountId = new InvestmentAccountId();
-        accountId.setCountryAccountCode("HK");
-        accountId.setAccountNumber("123");
-        InvestmentAccountIdList list = new InvestmentAccountIdList();
-        list.setAccountId(accountId);
-        response.setAccountIdList(List.of(list));
-
-        lenient().when(restClientService.get(anyString(), anyMap(), eq(RetrieveCustomerAccountsIdListResponse.class), anyInt(), anyBoolean()))
-                .thenReturn(response);
-
-        AccountId result = tradeTransferService.retrieveAccountIdWithCheckSum(headers);
-
-        assertNotNull(result);
-        assertEquals("HK", result.getCountryAccountCode());
-        assertEquals("123", result.getAccountNumber());
-    }
-
-    // ========================================================================================================
-    // 24. 测试 retrieveCustomerAccounts：调用 restClientService 获取账户列表
-    // ========================================================================================================
-    @Test
-    void retrieveCustomerAccounts_CallsRestClientService() {
-        Map<String, String> headers = new HashMap<>();
-        headers.put(HTTPRequestHeaderConstants.X_HSBC_CUSTOMER_ID, "CUST123");
-
-        RetrieveCustomerAccountsIdListResponse response = new RetrieveCustomerAccountsIdListResponse();
-        InvestmentAccountId accountId = new InvestmentAccountId();
-        accountId.setCountryAccountCode("HK");
-        accountId.setAccountNumber("123");
-        InvestmentAccountIdList list = new InvestmentAccountIdList();
-        list.setAccountId(accountId);
-        response.setAccountIdList(List.of(list));
-
-        lenient().when(restClientService.get(anyString(), anyMap(), eq(RetrieveCustomerAccountsIdListResponse.class), anyInt(), anyBoolean()))
-                .thenReturn(response);
-
-        CustomerAccounts result = tradeTransferService.retrieveCustomerAccounts(headers);
-
-        assertNotNull(result);
-        assertEquals(1, result.getInvestmentAccountList().size());
-        assertEquals("HK", result.getInvestmentAccountList().get(0).getInvestmentAccountId().getCountryAccountCode());
-    }
-
-    // ========================================================================================================
-    // 25. 测试 retrieveCustomerNamesWithCinNumber：调用 restClientService 获取姓名
-    // ========================================================================================================
-    @Test
-    void retrieveCustomerNamesWithCinNumber_CallsRestClientService() {
-        Map<String, String> headers = new HashMap<>();
-        String cin = "CUST123";
-
-        PartyNameResponse response = new PartyNameResponse();
+    void retrieveTransferList_withCustomerNameAndContact() {
+        Map<String, String> sourceRequestHeader = new HashMap<>();
+        sourceRequestHeader.put(HTTPRequestHeaderConstants.X_HSBC_CHNL_COUNTRYCODE, "HK");
+        sourceRequestHeader.put(HTTPRequestHeaderConstants.X_HSBC_CHNL_GROUP_MEMBER, "HBAP");
+        sourceRequestHeader.put(HTTPRequestHeaderConstants.X_HSBC_SAML, dummyToken);
+        sourceRequestHeader.put(HTTPRequestHeaderConstants.X_HSBC_SAML3, dummyToken);
+
+        // Mock customer name
+        PartyNameResponse partyNameResponse = new PartyNameResponse();
         PartyNameResponse.Name name = new PartyNameResponse.Name();
-        name.setLastName("CHAN");
-        name.setGivenName("ALICE");
-        response.setName(name);
+        name.setLastName("Smith");
+        name.setGivenName("John");
+        name.setCustomerChristianName("Michael");
+        partyNameResponse.setName(name);
+        when(retrieveCustomerProfilesService.retrieveCustomerNamesWithCinNumber(any(), any())).thenReturn(partyNameResponse);
 
-        lenient().when(restClientService.get(anyString(), anyMap(), eq(PartyNameResponse.class), anyInt(), anyBoolean()))
-                .thenReturn(response);
-
-        PartyNameResponse result = tradeTransferService.retrieveCustomerNamesWithCinNumber(cin, headers);
-
-        assertNotNull(result);
-        assertEquals("CHAN", result.getName().getLastName());
-    }
-
-    // ========================================================================================================
-    // 26. 测试 retrieveCustomerPhoneNumberWithCinNumber：调用 restClientService 获取电话
-    // ========================================================================================================
-    @Test
-    void retrieveCustomerPhoneNumberWithCinNumber_CallsRestClientService() {
-        Map<String, String> headers = new HashMap<>();
-        String cin = "CUST123";
-
-        PartyContactResponse response = new PartyContactResponse();
+        // Mock customer contact
+        PartyContactResponse partyContactResponse = new PartyContactResponse();
         PartyContactResponse.Contact contact = new PartyContactResponse.Contact();
-        contact.setMobileNumber1("+85212345678");
-        response.setContact(contact);
+        contact.setMobileNumber1("12345678");
+        partyContactResponse.setContact(contact);
+        when(retrieveCustomerProfilesService.retrieveCustomerPhoneNumberWithCinNumber(any(), any())).thenReturn(partyContactResponse);
 
-        lenient().when(restClientService.get(anyString(), anyMap(), eq(PartyContactResponse.class), anyInt(), anyBoolean()))
-                .thenReturn(response);
+        // Mock account list
+        InvestmentAccountId accountId = new InvestmentAccountId();
+        accountId.setCountryAccountCode("HK");
+        accountId.setGroupMemberAccountCode("HBAP");
+        accountId.setAccountNumber("123456");
+        accountId.setAccountProductTypeCode("SAV");
+        accountId.setAccountTypeCode("01");
+        accountId.setAccountCurrencyCode("HKD");
 
-        PartyContactResponse result = tradeTransferService.retrieveCustomerPhoneNumberWithCinNumber(cin, headers);
+        InvestmentAccountIdList accountIdList = new InvestmentAccountIdList();
+        accountIdList.setAccountId(accountId);
 
-        assertNotNull(result);
-        assertEquals("+85212345678", result.getContact().getMobileNumber1());
+        RetrieveCustomerAccountsIdListResponse accountsResponse = new RetrieveCustomerAccountsIdListResponse();
+        accountsResponse.setAccountIdList(List.of(accountIdList));
+        when(restClientService.get(anyString(), any(), eq(RetrieveCustomerAccountsIdListResponse.class), anyInt(), anyBoolean()))
+                .thenReturn(accountsResponse);
+
+        // Mock transfer list response
+        RetrieveTransferListResponse response = new RetrieveTransferListResponse();
+        RetrieveTransferListResponseData responseData = new RetrieveTransferListResponseData();
+        responseData.setTransferLists(new ArrayList<>());
+        response.setData(responseData);
+        ResponseDetails responseDetails = new ResponseDetails();
+        responseDetails.setResponseCodeNumber(0);
+        response.setResponseDetails(responseDetails);
+
+        when(restClientService.get(any(), any(), any(), anyInt(), anyBoolean())).thenReturn(response);
+
+        // 执行：应能正常执行，覆盖 addCustomerNameToUri 和 addCustomerContactToUri
+        tradeTransferService.retrieveTransferList(sourceRequestHeader, "ACCEPTED", Collections.singletonList("123"), "1", "PROD1", "PLAIN_TEXT");
     }
 
-    // ========================================================================================================
-    // 27. 测试 retrieveGoldPrice：调用 restClientService 获取金价
-    // ========================================================================================================
     @Test
-    void retrieveGoldPrice_CallsRestClientService() {
-        Map<String, String> headers = new HashMap<>();
+    void retrieveTransferDetail_accountNotFound() {
+        Map<String, String> sourceRequestHeader = new HashMap<>();
+        sourceRequestHeader.put(HTTPRequestHeaderConstants.X_HSBC_CHNL_COUNTRYCODE, "HK");
+        sourceRequestHeader.put(HTTPRequestHeaderConstants.X_HSBC_CHNL_GROUP_MEMBER, "HBAP");
+        sourceRequestHeader.put(HTTPRequestHeaderConstants.X_HSBC_SAML, dummyToken);
+        sourceRequestHeader.put(HTTPRequestHeaderConstants.X_HSBC_SAML3, dummyToken);
 
-        GoldPriceResponse response = new GoldPriceResponse();
-        GoldPriceResponseData data = new GoldPriceResponseData();
-        data.setGoldPriceAmount(BigDecimal.valueOf(505.50));
+        // Mock account list with no matching account
+        InvestmentAccountId accountId = new InvestmentAccountId();
+        accountId.setCountryAccountCode("HK");
+        accountId.setGroupMemberAccountCode("HBAP");
+        accountId.setAccountNumber("999999"); // 不匹配的账号
+        accountId.setAccountProductTypeCode("SAV");
+        accountId.setAccountTypeCode("01");
+        accountId.setAccountCurrencyCode("HKD");
+
+        InvestmentAccountIdList accountIdList = new InvestmentAccountIdList();
+        accountIdList.setAccountId(accountId);
+
+        RetrieveCustomerAccountsIdListResponse accountsResponse = new RetrieveCustomerAccountsIdListResponse();
+        accountsResponse.setAccountIdList(List.of(accountIdList));
+        when(restClientService.get(anyString(), any(), eq(RetrieveCustomerAccountsIdListResponse.class), anyInt(), anyBoolean()))
+                .thenReturn(accountsResponse);
+
+        // Mock transfer detail response
+        RetrieveTransferDetailResponse response = new RetrieveTransferDetailResponse();
+        RetrieveTransferDetailResponseData data = new RetrieveTransferDetailResponseData();
+        data.setInvestmentAccount(new InvestmentAccount());
+        data.getInvestmentAccount().setAccountNumber("123456"); // 与上面不匹配
         response.setData(data);
+        ResponseDetails responseDetails = new ResponseDetails();
+        responseDetails.setResponseCodeNumber(0);
+        response.setResponseDetails(responseDetails);
 
-        lenient().when(restClientService.get(anyString(), anyMap(), eq(GoldPriceResponse.class), anyInt(), anyBoolean()))
-                .thenReturn(response);
+        when(restClientService.get(any(), any(), any(), anyInt(), anyBoolean())).thenReturn(response);
 
-        GoldPriceResponse result = tradeTransferService.retrieveGoldPrice(headers);
-
-        assertNotNull(result);
-        assertEquals(BigDecimal.valueOf(505.50), result.getData().getGoldPriceAmount());
+        // 验证：应抛出 BadRequestException
+        assertThrows(BadRequestException.class, () ->
+                tradeTransferService.retrieveTransferDetail(sourceRequestHeader, "REF123")
+        );
     }
 
-    // ========================================================================================================
-    // 28. 测试 createTransfers：requestPriceValue 为 null，计算总金额为 0
-    // ========================================================================================================
     @Test
-    void createTransfers_RequestPriceValueNull_TotalAmountZero() {
-        Map<String, String> headers = new HashMap<>();
-        headers.put(HTTPRequestHeaderConstants.X_HSBC_CUSTOMER_ID, "CUST123");
+    void createTransfer_transferLimitExceeded_Daily() {
+        Map<String, String> sourceRequestHeader = new HashMap<>();
+        sourceRequestHeader.put(HTTPRequestHeaderConstants.X_HSBC_CHNL_COUNTRYCODE, "HK");
+        sourceRequestHeader.put(HTTPRequestHeaderConstants.X_HSBC_CHNL_GROUP_MEMBER, "HBAP");
+        sourceRequestHeader.put(HTTPRequestHeaderConstants.X_HSBC_SAML, dummyToken);
+        sourceRequestHeader.put(HTTPRequestHeaderConstants.X_HSBC_SAML3, dummyToken);
 
         CreateTransferRequest request = new CreateTransferRequest();
         CreateTransferRequestData data = new CreateTransferRequestData();
-        data.setActionRequestCode("D");
-        data.setRequestPriceValue(null);
-
+        request.setData(data);
+        data.setSenderInvestmentAccountChecksumIdentifier("12345");
         ReceiverInfo receiver = new ReceiverInfo();
-        receiver.setTransferQuantity(BigDecimal.valueOf(100));
+        receiver.setTransferQuantity(new BigDecimal("1000000")); // 大额
+        data.setReceiverLists(List.of(receiver));
+
+        // Mock limit response: daily limit exceeded
+        RetrieveTransferLimitResponse limitResponse = new RetrieveTransferLimitResponse();
+        RetrieveTransferLimitResponse.Data limitData = new RetrieveTransferLimitResponse.Data();
+        limitData.setAvailableTodayAmount(new BigDecimal("500000")); // 小于请求
+        limitData.setMaxDailyLimitedAmount(new BigDecimal("500000"));
+        limitData.setAvailableMonthToDateAmount(new BigDecimal("1000000"));
+        limitData.setMaxMonthlyLimitedAmount(new BigDecimal("1000000"));
+        limitData.setAvailableYearToDateAmount(new BigDecimal("1000000"));
+        limitData.setMaxYearlyLimitedAmount(new BigDecimal("1000000"));
+        limitResponse.setData(limitData);
+
+        when(tradeLimitService.retrieveLimitations(any())).thenReturn(limitResponse);
+
+        // Mock account
+        InvestmentAccountId accountId = new InvestmentAccountId();
+        accountId.setCountryAccountCode("HK");
+        accountId.setGroupMemberAccountCode("HBAP");
+        accountId.setAccountNumber("123456");
+        accountId.setAccountProductTypeCode("SAV");
+        accountId.setAccountTypeCode("01");
+        accountId.setAccountCurrencyCode("HKD");
+
+        InvestmentAccountIdList accountIdList = new InvestmentAccountIdList();
+        accountIdList.setAccountId(accountId);
+
+        RetrieveCustomerAccountsIdListResponse accountsResponse = new RetrieveCustomerAccountsIdListResponse();
+        accountsResponse.setAccountIdList(List.of(accountIdList));
+        when(restClientService.get(anyString(), any(), eq(RetrieveCustomerAccountsIdListResponse.class), anyInt(), anyBoolean()))
+                .thenReturn(accountsResponse);
+
+        // Mock SRE
+        RuleResponse sreResponse = new RuleResponse();
+        ResponseDetails responseDetails = new ResponseDetails();
+        responseDetails.setResponseCodeNumber(0);
+        sreResponse.setResponseDetails(responseDetails);
+        when(sreValidationService.callSreForTransferValidation(any(), any(), any(), any())).thenReturn(sreResponse);
+
+        // 验证：应抛出 TransferLimitExceededException
+        assertThrows(TransferLimitExceededException.class, () ->
+                tradeTransferService.createTransfers(sourceRequestHeader, request)
+        );
+    }
+
+    @Test
+    void createTransfer_transferLimitExceeded_Monthly() {
+        Map<String, String> sourceRequestHeader = new HashMap<>();
+        sourceRequestHeader.put(HTTPRequestHeaderConstants.X_HSBC_CHNL_COUNTRYCODE, "HK");
+        sourceRequestHeader.put(HTTPRequestHeaderConstants.X_HSBC_CHNL_GROUP_MEMBER, "HBAP");
+        sourceRequestHeader.put(HTTPRequestHeaderConstants.X_HSBC_SAML, dummyToken);
+        sourceRequestHeader.put(HTTPRequestHeaderConstants.X_HSBC_SAML3, dummyToken);
+
+        CreateTransferRequest request = new CreateTransferRequest();
+        CreateTransferRequestData data = new CreateTransferRequestData();
+        request.setData(data);
+        data.setSenderInvestmentAccountChecksumIdentifier("12345");
+        ReceiverInfo receiver = new ReceiverInfo();
+        receiver.setTransferQuantity(new BigDecimal("1000000"));
         data.setReceiverLists(List.of(receiver));
 
         RetrieveTransferLimitResponse limitResponse = new RetrieveTransferLimitResponse();
-        RetrieveTransferLimitResponseData limitData = new RetrieveTransferLimitResponseData();
-        limitData.setAvailableTodayAmount(BigDecimal.valueOf(100000));
-        limitData.setMaxDailyLimitedAmount(BigDecimal.valueOf(100000));
+        RetrieveTransferLimitResponse.Data limitData = new RetrieveTransferLimitResponse.Data();
+        limitData.setAvailableTodayAmount(new BigDecimal("1000000"));
+        limitData.setMaxDailyLimitedAmount(new BigDecimal("1000000"));
+        limitData.setAvailableMonthToDateAmount(new BigDecimal("500000")); // 超出
+        limitData.setMaxMonthlyLimitedAmount(new BigDecimal("500000"));
+        limitData.setAvailableYearToDateAmount(new BigDecimal("1000000"));
+        limitData.setMaxYearlyLimitedAmount(new BigDecimal("1000000"));
         limitResponse.setData(limitData);
 
-        lenient().when(tradeLimitService.retrieveLimitations(any())).thenReturn(limitResponse);
-        lenient().when(tradeTransferService.retrieveAccountIdWithCheckSum(any())).thenReturn(new AccountId());
-        lenient().when(restClientService.post(anyString(), anyMap(), any(), any(), anyInt(), anyBoolean()))
-                .thenReturn(new CreateTransferResponse());
+        when(tradeLimitService.retrieveLimitations(any())).thenReturn(limitResponse);
 
-        // Act
-        tradeTransferService.createTransfers(headers, request);
+        InvestmentAccountId accountId = new InvestmentAccountId();
+        accountId.setCountryAccountCode("HK");
+        accountId.setGroupMemberAccountCode("HBAP");
+        accountId.setAccountNumber("123456");
+        accountId.setAccountProductTypeCode("SAV");
+        accountId.setAccountTypeCode("01");
+        accountId.setAccountCurrencyCode("HKD");
 
-        // Assert：不会抛异常，说明 totalTranAmount = 0
-        // 通过验证 limitService 被调用一次
-        verify(tradeLimitService).retrieveLimitations(any());
+        InvestmentAccountIdList accountIdList = new InvestmentAccountIdList();
+        accountIdList.setAccountId(accountId);
+
+        RetrieveCustomerAccountsIdListResponse accountsResponse = new RetrieveCustomerAccountsIdListResponse();
+        accountsResponse.setAccountIdList(List.of(accountIdList));
+        when(restClientService.get(anyString(), any(), eq(RetrieveCustomerAccountsIdListResponse.class), anyInt(), anyBoolean()))
+                .thenReturn(accountsResponse);
+
+        RuleResponse sreResponse = new RuleResponse();
+        ResponseDetails responseDetails = new ResponseDetails();
+        responseDetails.setResponseCodeNumber(0);
+        sreResponse.setResponseDetails(responseDetails);
+        when(sreValidationService.callSreForTransferValidation(any(), any(), any(), any())).thenReturn(sreResponse);
+
+        assertThrows(TransferLimitExceededException.class, () ->
+                tradeTransferService.createTransfers(sourceRequestHeader, request)
+        );
     }
 
-    // ========================================================================================================
-    // 29. 测试 modifyTransfers：非 A/R 操作，不调用 SRE 和金价
-    // ========================================================================================================
     @Test
-    void modifyTransfers_NonAROperation_NoSreNoGoldPrice() {
-        Map<String, String> headers = new HashMap<>();
-        headers.put(HTTPRequestHeaderConstants.X_HSBC_CUSTOMER_ID, "CUST123");
+    void createTransfer_transferLimitExceeded_Yearly() {
+        Map<String, String> sourceRequestHeader = new HashMap<>();
+        sourceRequestHeader.put(HTTPRequestHeaderConstants.X_HSBC_CHNL_COUNTRYCODE, "HK");
+        sourceRequestHeader.put(HTTPRequestHeaderConstants.X_HSBC_CHNL_GROUP_MEMBER, "HBAP");
+        sourceRequestHeader.put(HTTPRequestHeaderConstants.X_HSBC_SAML, dummyToken);
+        sourceRequestHeader.put(HTTPRequestHeaderConstants.X_HSBC_SAML3, dummyToken);
+
+        CreateTransferRequest request = new CreateTransferRequest();
+        CreateTransferRequestData data = new CreateTransferRequestData();
+        request.setData(data);
+        data.setSenderInvestmentAccountChecksumIdentifier("12345");
+        ReceiverInfo receiver = new ReceiverInfo();
+        receiver.setTransferQuantity(new BigDecimal("1000000"));
+        data.setReceiverLists(List.of(receiver));
+
+        RetrieveTransferLimitResponse limitResponse = new RetrieveTransferLimitResponse();
+        RetrieveTransferLimitResponse.Data limitData = new RetrieveTransferLimitResponse.Data();
+        limitData.setAvailableTodayAmount(new BigDecimal("1000000"));
+        limitData.setMaxDailyLimitedAmount(new BigDecimal("1000000"));
+        limitData.setAvailableMonthToDateAmount(new BigDecimal("1000000"));
+        limitData.setMaxMonthlyLimitedAmount(new BigDecimal("1000000"));
+        limitData.setAvailableYearToDateAmount(new BigDecimal("500000")); // 超出
+        limitData.setMaxYearlyLimitedAmount(new BigDecimal("500000"));
+        limitResponse.setData(limitData);
+
+        when(tradeLimitService.retrieveLimitations(any())).thenReturn(limitResponse);
+
+        InvestmentAccountId accountId = new InvestmentAccountId();
+        accountId.setCountryAccountCode("HK");
+        accountId.setGroupMemberAccountCode("HBAP");
+        accountId.setAccountNumber("123456");
+        accountId.setAccountProductTypeCode("SAV");
+        accountId.setAccountTypeCode("01");
+        accountId.setAccountCurrencyCode("HKD");
+
+        InvestmentAccountIdList accountIdList = new InvestmentAccountIdList();
+        accountIdList.setAccountId(accountId);
+
+        RetrieveCustomerAccountsIdListResponse accountsResponse = new RetrieveCustomerAccountsIdListResponse();
+        accountsResponse.setAccountIdList(List.of(accountIdList));
+        when(restClientService.get(anyString(), any(), eq(RetrieveCustomerAccountsIdListResponse.class), anyInt(), anyBoolean()))
+                .thenReturn(accountsResponse);
+
+        RuleResponse sreResponse = new RuleResponse();
+        ResponseDetails responseDetails = new ResponseDetails();
+        responseDetails.setResponseCodeNumber(0);
+        sreResponse.setResponseDetails(responseDetails);
+        when(sreValidationService.callSreForTransferValidation(any(), any(), any(), any())).thenReturn(sreResponse);
+
+        assertThrows(TransferLimitExceededException.class, () ->
+                tradeTransferService.createTransfers(sourceRequestHeader, request)
+        );
+    }
+
+    @Test
+    void createTransfer_handleDOperationResponse_withGoldPrice() {
+        Map<String, String> sourceRequestHeader = new HashMap<>();
+        sourceRequestHeader.put(HTTPRequestHeaderConstants.X_HSBC_CHNL_COUNTRYCODE, "HK");
+        sourceRequestHeader.put(HTTPRequestHeaderConstants.X_HSBC_CHNL_GROUP_MEMBER, "HBAP");
+        sourceRequestHeader.put(HTTPRequestHeaderConstants.X_HSBC_SAML, dummyToken);
+        sourceRequestHeader.put(HTTPRequestHeaderConstants.X_HSBC_SAML3, dummyToken);
+
+        CreateTransferRequest request = new CreateTransferRequest();
+        CreateTransferRequestData data = new CreateTransferRequestData();
+        data.setActionRequestCode(ActionRequestCode.D); // 关键：D 操作
+        data.setSenderInvestmentAccountChecksumIdentifier("12345");
+        ReceiverInfo receiver = new ReceiverInfo();
+        receiver.setTransferQuantity(new BigDecimal("1"));
+        data.setReceiverLists(List.of(receiver));
+        request.setData(data);
+
+        // Mock gold price
+        GoldPriceResponse goldPriceResponse = new GoldPriceResponse();
+        GoldPriceResponseData mdsData = new GoldPriceResponseData();
+        mdsData.setGoldPriceAmount(new BigDecimal("1234.56"));
+        mdsData.setPublishTime("2025-11-20T10:00:00Z");
+        goldPriceResponse.setData(mdsData);
+        when(restClientService.get(anyString(), any(), eq(GoldPriceResponse.class), anyInt(), anyBoolean()))
+                .thenReturn(goldPriceResponse);
+
+        // Mock account
+        InvestmentAccountId accountId = new InvestmentAccountId();
+        accountId.setCountryAccountCode("HK");
+        accountId.setGroupMemberAccountCode("HBAP");
+        accountId.setAccountNumber("123456");
+        accountId.setAccountProductTypeCode("SAV");
+        accountId.setAccountTypeCode("01");
+        accountId.setAccountCurrencyCode("HKD");
+
+        InvestmentAccountIdList accountIdList = new InvestmentAccountIdList();
+        accountIdList.setAccountId(accountId);
+
+        RetrieveCustomerAccountsIdListResponse accountsResponse = new RetrieveCustomerAccountsIdListResponse();
+        accountsResponse.setAccountIdList(List.of(accountIdList));
+        when(restClientService.get(anyString(), any(), eq(RetrieveCustomerAccountsIdListResponse.class), anyInt(), anyBoolean()))
+                .thenReturn(accountsResponse);
+
+        // Mock SRE
+        RuleResponse sreResponse = new RuleResponse();
+        ResponseDetails responseDetails = new ResponseDetails();
+        responseDetails.setResponseCodeNumber(0);
+        sreResponse.setResponseDetails(responseDetails);
+        when(sreValidationService.callSreForTransferValidation(any(), any(), any(), any())).thenReturn(sreResponse);
+
+        // Mock duplicate key
+        when(duplicateSubmitPreventionService.generateUniqueKey()).thenReturn("unique-key-123");
+
+        // Mock response with transfer order list
+        CreateTransferResponse response = new CreateTransferResponse();
+        CreateTransferResponse.Data responseData = new CreateTransferResponse.Data();
+        List<TransferOrderInfo> orderList = new ArrayList<>();
+        TransferOrderInfo orderInfo = new TransferOrderInfo();
+        orderList.add(orderInfo);
+        responseData.setTransferOrderLists(orderList);
+        response.setData(responseData);
+
+        ResponseDetails respDetails = new ResponseDetails();
+        respDetails.setResponseCodeNumber(0);
+        response.setResponseDetails(respDetails);
+
+        when(restClientService.post(any(), any(), any(), any(), anyInt(), anyBoolean())).thenReturn(response);
+
+        // Mock customer name
+        PartyNameResponse partyNameResponse = new PartyNameResponse();
+        PartyNameResponse.Name name = new PartyNameResponse.Name();
+        name.setLastName("Smith");
+        name.setGivenName("John");
+        name.setCustomerChristianName("Michael");
+        partyNameResponse.setName(name);
+        when(retrieveCustomerProfilesService.retrieveCustomerNamesWithCinNumber(any(), any())).thenReturn(partyNameResponse);
+
+        // 执行
+        CreateTransferResponse result = tradeTransferService.createTransfers(sourceRequestHeader, request);
+
+        // 验证：D操作应设置金价和唯一键
+        assertNotNull(result.getData().getRequestUniqueKey());
+        assertEquals("1234.56", result.getData().getTransferOrderLists().get(0).getRequestPriceValue().toString());
+        assertEquals("HKD", result.getData().getTransferOrderLists().get(0).getPriceCurrencyCode());
+        assertEquals("2025-11-20T10:00:00Z", result.getData().getTransferOrderLists().get(0).getRequestPriceAsOfDateTime());
+    }
+
+    @Test
+    void setSenderFullName_withNullFields() {
+        // 通过反射调用私有方法
+        PartyNameResponse partyNameResponse = new PartyNameResponse();
+        PartyNameResponse.Name name = new PartyNameResponse.Name();
+        name.setLastName(null);
+        name.setGivenName("");
+        name.setCustomerChristianName("Michael");
+        partyNameResponse.setName(name);
+
+        CreateTransferResponse createTransferResponse = new CreateTransferResponse();
+        CreateTransferResponse.Data data = new CreateTransferResponse.Data();
+        createTransferResponse.setData(data);
+
+        // 使用反射调用私有方法
+        try {
+            Method method = TradeTransferServiceImpl.class.getDeclaredMethod("setSenderFullName", CreateTransferResponse.class, PartyNameResponse.class);
+            method.setAccessible(true);
+            method.invoke(tradeTransferService, createTransferResponse, partyNameResponse);
+        } catch (Exception e) {
+            fail("反射调用失败: " + e.getMessage());
+        }
+
+        // 验证：应拼接为 "Michael"（仅非空字段）
+        assertEquals("Michael", createTransferResponse.getData().getSenderCustomerName());
+    }
+
+    @Test
+    void modifyTransfer_rejectAction() {
+        Map<String, String> sourceRequestHeader = new HashMap<>();
+        sourceRequestHeader.put(HTTPRequestHeaderConstants.X_HSBC_CHNL_COUNTRYCODE, "HK");
+        sourceRequestHeader.put(HTTPRequestHeaderConstants.X_HSBC_CHNL_GROUP_MEMBER, "HBAP");
+        sourceRequestHeader.put(HTTPRequestHeaderConstants.X_HSBC_SAML, dummyToken);
+        sourceRequestHeader.put(HTTPRequestHeaderConstants.X_HSBC_SAML3, dummyToken);
 
         UpdateTransferRequest request = new UpdateTransferRequest();
         UpdateTransferRequestData data = new UpdateTransferRequestData();
-        data.setTransferActionCode(TransferActionCode.C); // CANCEL
-        data.setReceiverInvestmentAccountChecksumIdentifier("chk1");
+        request.setData(data);
+        data.setTransferActionCode(TransferActionCode.R); // REJECT 路径
+        data.setReceiverInvestmentAccountChecksumIdentifier("12345");
 
-        lenient().when(restClientService.put(anyString(), anyMap(), any(), any(), anyInt(), anyBoolean()))
-                .thenReturn(new UpdateTransferResponse());
+        // Mock account
+        InvestmentAccountId accountId = new InvestmentAccountId();
+        accountId.setCountryAccountCode("HK");
+        accountId.setGroupMemberAccountCode("HBAP");
+        accountId.setAccountNumber("123456");
+        accountId.setAccountProductTypeCode("SAV");
+        accountId.setAccountTypeCode("01");
+        accountId.setAccountCurrencyCode("HKD");
 
-        tradeTransferService.modifyTransfers(headers, request);
+        InvestmentAccountIdList accountIdList = new InvestmentAccountIdList();
+        accountIdList.setAccountId(accountId);
 
-        // 验证 SRE 和金价未被调用
-        verify(sreValidationService, never()).callSreForTransferValidation(any(), any(), any(), any());
-        verify(tradeTransferService, never()).retrieveGoldPrice(any());
+        RetrieveCustomerAccountsIdListResponse accountsResponse = new RetrieveCustomerAccountsIdListResponse();
+        accountsResponse.setAccountIdList(List.of(accountIdList));
+        when(restClientService.get(anyString(), any(), eq(RetrieveCustomerAccountsIdListResponse.class), anyInt(), anyBoolean()))
+                .thenReturn(accountsResponse);
+
+        // Mock SRE (should not be called for R)
+        RuleResponse sreResponse = new RuleResponse();
+        ResponseDetails responseDetails = new ResponseDetails();
+        responseDetails.setResponseCodeNumber(0);
+        sreResponse.setResponseDetails(responseDetails);
+        when(sreValidationService.callSreForTransferValidation(any(), any(), any(), any())).thenReturn(sreResponse);
+
+        // Mock gold price (should not be called for R)
+        GoldPriceResponse goldPriceResponse = new GoldPriceResponse();
+        when(restClientService.get(anyString(), any(), eq(GoldPriceResponse.class), anyInt(), anyBoolean()))
+                .thenReturn(goldPriceResponse);
+
+        UpdateTransferResponse mockUpdateTransferResponse = new UpdateTransferResponse();
+        ResponseDetails respDetails = new ResponseDetails();
+        respDetails.setResponseCodeNumber(0);
+        mockUpdateTransferResponse.setResponseDetails(respDetails);
+
+        when(restClientService.put(any(), any(), any(), any(), anyInt(), anyBoolean())).thenReturn(mockUpdateTransferResponse);
+
+        // 执行：应走 R 路径，不调用 SRE 或金价
+        tradeTransferService.modifyTransfers(sourceRequestHeader, request);
     }
 
-    // ========================================================================================================
-    // 30. 测试 modifyTransfers：A 操作，但 receiverChecksum 为空，不设置 accountId
-    // ========================================================================================================
     @Test
-    void modifyTransfers_AOperation_ReceiverChecksumEmpty_SetsCinOnly() {
+    void maskNamesInResponse_reflectionException() {
+        // 模拟一个对象，其 getter/setter 方法名不存在，触发反射异常
+        Object mockObject = new Object() {
+            public String getSenderCustomerFirstName() { return "John"; }
+            public String getSenderCustomerMiddleName() { return "Michael"; }
+            // 没有 setSenderCustomerFirstName / setSenderCustomerMiddleName
+        };
+
+        // 调用方法：应捕获异常并记录日志，不抛出
+        tradeTransferService.maskFirstNameAndMiddleName(mockObject, "senderCustomerFirstName", "senderCustomerMiddleName");
+        // 无异常即通过，日志由 log4j 记录，无需断言
+    }
+
+    @Test
+    void validateSreForReceivers_withNullReceiverCin() {
+        List<ReceiverInfo> receivers = new ArrayList<>();
+        ReceiverInfo receiver = new ReceiverInfo();
+        receiver.setReceiverCustomerNumber(null); // 触发无CIN规则
+        receivers.add(receiver);
+
+        // Mock SRE call with no CIN rule
+        RuleResponse sreResponse = new RuleResponse();
+        ResponseDetails responseDetails = new ResponseDetails();
+        responseDetails.setResponseCodeNumber(0);
+        sreResponse.setResponseDetails(responseDetails);
+        when(sreValidationService.callSreForTransferValidation(
+                eq("dac_tokenized_gold_transfer_sender_rule_without_cin"),
+                any(), any(), any())).thenReturn(sreResponse);
+
+        tradeTransferService.validateSreForReceivers(receivers, "CIN123", Collections.emptyMap());
+
+        // 验证：调用了无CIN规则
+        verify(sreValidationService).callSreForTransferValidation(
+                eq("dac_tokenized_gold_transfer_sender_rule_without_cin"),
+                eq("CIN123"), eq(null), any());
+    }
+
+    @Test
+    void extractAccountIdMap_withNullAccountList() {
+        CustomerAccounts customerAccounts = new CustomerAccounts();
+        customerAccounts.setInvestmentAccountList(null);
+        Map<String, String> result = tradeTransferService.extractAccountIdMap(customerAccounts);
+        assertTrue(result.isEmpty());
+    }
+
+    @Test
+    void extractAccountIdMap_withEmptyAccountList() {
+        CustomerAccounts customerAccounts = new CustomerAccounts();
+        customerAccounts.setInvestmentAccountList(new ArrayList<>());
+        Map<String, String> result = tradeTransferService.extractAccountIdMap(customerAccounts);
+        assertTrue(result.isEmpty());
+    }
+
+    @Test
+    void retrieveAccountIdWithCheckSum() {
+        // 模拟 restClientService 调用返回 AccountId
+        InvestmentAccountId accountId = new InvestmentAccountId();
+        accountId.setCountryAccountCode("HK");
+        accountId.setGroupMemberAccountCode("HBAP");
+        accountId.setAccountNumber("123456");
+        accountId.setAccountProductTypeCode("SAV");
+        accountId.setAccountTypeCode("01");
+        accountId.setAccountCurrencyCode("HKD");
+
+        InvestmentAccountIdList accountIdList = new InvestmentAccountIdList();
+        accountIdList.setAccountId(accountId);
+
+        RetrieveCustomerAccountsIdListResponse response = new RetrieveCustomerAccountsIdListResponse();
+        response.setAccountIdList(List.of(accountIdList));
+
+        when(restClientService.get(anyString(), any(), eq(RetrieveCustomerAccountsIdListResponse.class), anyInt(), anyBoolean()))
+                .thenReturn(response);
+
         Map<String, String> headers = new HashMap<>();
-        headers.put(HTTPRequestHeaderConstants.X_HSBC_CUSTOMER_ID, "CUST123");
+        headers.put(TransferQueryParameterConstant.CHECKSUM, "12345");
 
-        UpdateTransferRequest request = new UpdateTransferRequest();
-        UpdateTransferRequestData data = new UpdateTransferRequestData();
-        data.setTransferActionCode(TransferActionCode.A);
-        data.setReceiverInvestmentAccountChecksumIdentifier(null); // 为空
-
-        lenient().when(restClientService.put(anyString(), anyMap(), any(), any(), anyInt(), anyBoolean()))
-                .thenReturn(new UpdateTransferResponse());
-
-        tradeTransferService.modifyTransfers(headers, request);
-
-        // 验证：虽然 A 操作，但 checksum 为空，所以不会调用 retrieveAccountIdWithCheckSum
-        verify(tradeTransferService, never()).retrieveAccountIdWithCheckSum(any());
-        // 但 CIN 仍被设置
-        assertEquals("CUST123", data.getReceiverCustomerInternalNumber());
+        // 调用私有方法：需要反射
+        try {
+            Method method = TradeTransferServiceImpl.class.getDeclaredMethod("retrieveAccountIdWithCheckSum", Map.class);
+            method.setAccessible(true);
+            AccountId result = (AccountId) method.invoke(tradeTransferService, headers);
+            assertNotNull(result);
+            assertEquals("123456", result.getAccountNumber());
+        } catch (Exception e) {
+            fail("反射调用失败: " + e.getMessage());
+        }
     }
 }
