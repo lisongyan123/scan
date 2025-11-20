@@ -81,6 +81,61 @@ class TradeLimitServiceImplTest {
     }
 
     // --- 现有的测试方法 ---
+
+    
+    @Test
+    void testRetrieveLimitations_monthlyCountAvailablePositive_setsAvailableCount() {
+        // 测试 validateMonthlyAndYearlyLimits 中 availableMonthlyCount > 0 的分支
+        lenient().when(customerLimitConfig.getDailyAmount()).thenReturn(BigDecimal.valueOf(1000));
+        lenient().when(customerLimitConfig.getYearlyAmount()).thenReturn(BigDecimal.valueOf(10000));
+        lenient().when(customerLimitConfig.getMonthlyAmount()).thenReturn(BigDecimal.valueOf(5000));
+        lenient().when(customerLimitConfig.getMonthlyCount()).thenReturn(5); // 配置为5次
+
+        LimitEnquiryResponse limitEnquiryResponse = mock(LimitEnquiryResponse.class);
+        LimitEnquiryResponsePayload limitEnquiryResponseDataWrapper = new LimitEnquiryResponsePayload();
+        LimitEnquiryResponseDataWrapper responsePayload = new LimitEnquiryResponseDataWrapper();
+        LimitEnquiryResponseRecord responseWork = new LimitEnquiryResponseRecord();
+        LimitEnquiryResponseData responseWorkRecord = new LimitEnquiryResponseData();
+        List<TransactionLimitDetailList> transactionLimitDetailList = new ArrayList<>();
+        TransactionLimitDetailList detail = new TransactionLimitDetailList();
+        detail.setLimitType("P2PS");
+        CurrentLimitAmount currentLimit = new CurrentLimitAmount();
+        currentLimit.setCurrentLimitAmountValue(100000L); // 1000.00
+        currentLimit.setCurrentLimitAmountDecimal(2);
+        detail.setCurrentLimitAmount(currentLimit);
+        UtilizedLimitAmount utilizedLimit = new UtilizedLimitAmount();
+        utilizedLimit.setUtilizedLimitAmountValue(0L);
+        utilizedLimit.setUtilizedLimitAmountDecimal(2);
+        detail.setUtilizedLimitAmount(utilizedLimit);
+        transactionLimitDetailList.add(detail);
+        responseWorkRecord.setTransactionLimitDetail(transactionLimitDetailList);
+        responseWork.setResponseWorkRecord(responseWorkRecord);
+        responsePayload.setResponseWork(responseWork);
+        limitEnquiryResponseDataWrapper.setResponsePayload(responsePayload);
+        lenient().when(limitEnquiryResponse.getCbHkHbapObsShrdClcTranLmtEnqWpbSrvOperationResponse()).thenReturn(limitEnquiryResponseDataWrapper);
+        lenient().when(restClientService.get(anyString(), anyMap(), eq(LimitEnquiryResponse.class), anyInt(), anyBoolean()))
+                .thenReturn(limitEnquiryResponse);
+
+        RetrieveTransferAmountResponse transferAmountResponse = new RetrieveTransferAmountResponse();
+        RetrieveTransferAmountResponseData data = new RetrieveTransferAmountResponseData();
+        // 模拟已用次数少于配置的最大次数，使得 availableMonthlyCount > 0
+        data.setMonthlyTransferCount(2); // 已用2次
+        data.setMonthlyTransferAmount(BigDecimal.valueOf(100));
+        data.setYearlyTransferAmount(BigDecimal.valueOf(200));
+        transferAmountResponse.setData(data);
+        lenient().when(restClientService.get(contains("/trade-amount"), anyMap(), eq(RetrieveTransferAmountResponse.class), anyInt(), anyBoolean()))
+                .thenReturn(transferAmountResponse);
+
+        RetrieveTransferLimitResponse response = tradeLimitService.retrieveLimitations(headers);
+
+        assertThat(response).isNotNull();
+        // 验证 availableMonthlyCount = 5 (config) - 2 (used) = 3
+        assertThat(response.getData().getAvailableMonthlyTransferCount()).isEqualTo("3");
+        // 确保后续逻辑也执行，没有抛出异常
+        assertThat(response.getData().getAvailableMonthToDateAmount()).isNotNull();
+        assertThat(response.getData().getAvailableYearToDateAmount()).isNotNull();
+    }
+    
     @Test
     void testRetrieveLimitations_success() {
         lenient().when(customerLimitConfig.getDailyAmount()).thenReturn(BigDecimal.valueOf(1000));
