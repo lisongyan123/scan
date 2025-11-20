@@ -1,16 +1,29 @@
-import com.hsbc.trade.ErrorCodes;
-import com.hsbc.trade.constant.HTTPRequestHeaderConstants;
+package com.hsbc.trade.transfer.service.impl;
+
+import com.hsbc.trade.HTTPRequestHeaderConstants;
+import com.hsbc.trade.service.DuplicateSubmitPreventionService;
 import com.hsbc.trade.service.RestClientService;
-import com.hsbc.trade.transfer.config.CustomerLimitConfig;
-import com.hsbc.trade.transfer.domain.limit.*;
-import com.hsbc.trade.transfer.enums.ExceptionMessageEnum;
+import com.hsbc.trade.transfer.common.ReceiverInfo;
+import com.hsbc.trade.transfer.constant.TransferQueryParameterConstant;
+import com.hsbc.trade.transfer.createtransfer.CreateTransferRequest;
+import com.hsbc.trade.transfer.createtransfer.CreateTransferResponse;
+import com.hsbc.trade.transfer.domain.account.CustomerAccounts;
+import com.hsbc.trade.transfer.domain.account.InvestmentAccount;
+import com.hsbc.trade.transfer.domain.cep.PartyContactResponse;
+import com.hsbc.trade.transfer.domain.cep.PartyNameResponse;
+import com.hsbc.trade.transfer.domain.mds.GoldPriceResponse;
+import com.hsbc.trade.transfer.domain.mds.GoldPriceResponseData;
 import com.hsbc.trade.transfer.exception.TransferLimitExceededException;
-import com.hsbc.trade.transfer.retrievetransferamount.RetrieveTransferAmountResponse;
-import com.hsbc.trade.transfer.retrievetransferamount.RetrieveTransferAmountResponseData;
+import com.hsbc.trade.transfer.retrievetransferdetail.RetrieveTransferDetailResponse;
+import com.hsbc.trade.transfer.retrievetransferdetail.RetrieveTransferDetailResponseData;
 import com.hsbc.trade.transfer.retrievetransferlimit.RetrieveTransferLimitResponse;
-import com.hsbc.trade.transfer.retrievetransferlimit.RetrieveTransferLimitResponseData;
+import com.hsbc.trade.transfer.retrievetransferlist.RetrieveTransferListResponse;
+import com.hsbc.trade.transfer.retrievetransferlist.RetrieveTransferListResponseData;
+import com.hsbc.trade.transfer.updatetransfer.UpdateTransferRequest;
+import com.hsbc.trade.transfer.updatetransfer.UpdateTransferResponse;
 import com.hsbc.trade.utils.E2ETrustTokenUtil;
-import com.hsbc.trade.service.impl.RetrieveCustomerProfilesServiceImpl;
+import jakarta.ws.rs.BadRequestException;
+import jakarta.ws.rs.InternalServerErrorException;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
@@ -18,11 +31,8 @@ import org.mockito.*;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.test.util.ReflectionTestUtils;
 
-import jakarta.ws.rs.InternalServerErrorException;
 import java.math.BigDecimal;
 import java.net.URI;
-import java.time.LocalDate;
-import java.time.ZonedDateTime;
 import java.util.*;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -31,524 +41,437 @@ import static org.mockito.ArgumentMatchers.*;
 import static org.mockito.Mockito.*;
 
 @ExtendWith(MockitoExtension.class)
-class TradeLimitServiceImplTest {
+class TradeTransferServiceImplTest {
 
     @Mock
     private RestClientService restClientService;
 
     @Mock
-    private CustomerLimitConfig customerLimitConfig;
-
-    @Mock
     private E2ETrustTokenUtil e2ETrustTokenUtil;
 
     @Mock
-    private RetrieveCustomerProfilesServiceImpl retrieveCustomerProfilesService;
+    private DuplicateSubmitPreventionService duplicateSubmitPreventionService;
 
-    @InjectMocks
+    @Mock
     private TradeLimitServiceImpl tradeLimitService;
 
+    @Mock
+    private SreValidationServiceImpl sreValidationService;
+
+    @InjectMocks
+    private TradeTransferServiceImpl tradeTransferService;
+
     private Map<String, String> headers;
+    private final String CUSTOMER_CIN = "CUST123";
+    private final String ACCOUNT_CHECKSUM = "CHK123";
+    private final String TRANSFER_REF = "REF456";
+    private final String TRADE_ONLINE_URL = "https://trade-online.example.com";
 
     @BeforeEach
     void setUp() {
         MockitoAnnotations.openMocks(this);
         headers = new HashMap<>();
-        headers.put("X-HSBC-User-Id", "PERM123");
-        // 设置依赖项
-        ReflectionTestUtils.setField(tradeLimitService, "e2ETrustTokenUtil", e2ETrustTokenUtil);
-        ReflectionTestUtils.setField(tradeLimitService, "retrieveCustomerProfilesService", retrieveCustomerProfilesService);
-        // 设置其他字段的值...
-        ReflectionTestUtils.setField(tradeLimitService, "gbgf", "GBGF");
-        ReflectionTestUtils.setField(tradeLimitService, "sourceSystemId", "SRC");
-        ReflectionTestUtils.setField(tradeLimitService, "clientIp", "127.0.0.1");
-        ReflectionTestUtils.setField(tradeLimitService, "clientId", "CID");
-        ReflectionTestUtils.setField(tradeLimitService, "clientSecret", "CSECRET");
-        ReflectionTestUtils.setField(tradeLimitService, "targetSystemEnvironmentId", "DEV");
-        ReflectionTestUtils.setField(tradeLimitService, "sessionCorrelationId", "SESSION");
-        ReflectionTestUtils.setField(tradeLimitService, "bankNumber", "004");
-        ReflectionTestUtils.setField(tradeLimitService, "channelIndicator", "I");
-        ReflectionTestUtils.setField(tradeLimitService, "enquiryChannel", "O");
-        ReflectionTestUtils.setField(tradeLimitService, "customerId", "CUST123");
-        ReflectionTestUtils.setField(tradeLimitService, "customerIdType", "CIN");
-        ReflectionTestUtils.setField(tradeLimitService, "limitType", "P2PS");
-        ReflectionTestUtils.setField(tradeLimitService, "sequentIndicator", "N");
-        ReflectionTestUtils.setField(tradeLimitService, "contactEnquiryUrl", "https://enquiry.example.com/limit");
-        ReflectionTestUtils.setField(tradeLimitService, "srbpOnlineUrl", "https://data.example.com");
+        headers.put(HTTPRequestHeaderConstants.X_HSBC_CUSTOMER_ID, CUSTOMER_CIN);
 
-        lenient().when(e2ETrustTokenUtil.getE2ETrustToken()).thenReturn("dummy-token");
-        lenient().when(retrieveCustomerProfilesService.getCIN(any())).thenReturn("dummy-cin");
+        // 使用 ReflectionTestUtils 设置 TradeTransferServiceImpl 的依赖和属性
+        ReflectionTestUtils.setField(tradeTransferService, "restClientService", restClientService);
+        ReflectionTestUtils.setField(tradeTransferService, "e2ETrustTokenUtil", e2ETrustTokenUtil);
+        ReflectionTestUtils.setField(tradeTransferService, "duplicateSubmitPreventionService", duplicateSubmitPreventionService);
+        ReflectionTestUtils.setField(tradeTransferService, "tradeLimitService", tradeLimitService);
+        ReflectionTestUtils.setField(tradeTransferService, "sreValidationService", sreValidationService);
+
+        // 设置 TradeTransferServiceImpl 的配置属性
+        ReflectionTestUtils.setField(tradeTransferService, "tradeOnlineUrl", TRADE_ONLINE_URL);
+        ReflectionTestUtils.setField(tradeTransferService, "timeout", 5000);
+        ReflectionTestUtils.setField(tradeTransferService, "printMessageLog", false);
+
+        lenient().when(e2ETrustTokenUtil.getE2ETrustToken()).thenReturn("dummy-e2e-token");
     }
 
-    // --- 现有的测试方法 ---
-
-    
     @Test
-    void testRetrieveLimitations_monthlyCountAvailablePositive_setsAvailableCount() {
-        // 测试 validateMonthlyAndYearlyLimits 中 availableMonthlyCount > 0 的分支
-        lenient().when(customerLimitConfig.getDailyAmount()).thenReturn(BigDecimal.valueOf(1000));
-        lenient().when(customerLimitConfig.getYearlyAmount()).thenReturn(BigDecimal.valueOf(10000));
-        lenient().when(customerLimitConfig.getMonthlyAmount()).thenReturn(BigDecimal.valueOf(5000));
-        lenient().when(customerLimitConfig.getMonthlyCount()).thenReturn(5); // 配置为5次
+    void testRetrieveTransferList_success() {
+        RetrieveTransferListResponse mockResponse = new RetrieveTransferListResponse();
+        RetrieveTransferListResponseData mockData = new RetrieveTransferListResponseData();
+        mockResponse.setData(mockData);
+        lenient().when(restClientService.get(anyString(), anyMap(), eq(RetrieveTransferListResponse.class), anyInt(), anyBoolean()))
+                .thenReturn(mockResponse);
 
-        LimitEnquiryResponse limitEnquiryResponse = mock(LimitEnquiryResponse.class);
-        LimitEnquiryResponsePayload limitEnquiryResponseDataWrapper = new LimitEnquiryResponsePayload();
-        LimitEnquiryResponseDataWrapper responsePayload = new LimitEnquiryResponseDataWrapper();
-        LimitEnquiryResponseRecord responseWork = new LimitEnquiryResponseRecord();
-        LimitEnquiryResponseData responseWorkRecord = new LimitEnquiryResponseData();
-        List<TransactionLimitDetailList> transactionLimitDetailList = new ArrayList<>();
-        TransactionLimitDetailList detail = new TransactionLimitDetailList();
-        detail.setLimitType("P2PS");
-        CurrentLimitAmount currentLimit = new CurrentLimitAmount();
-        currentLimit.setCurrentLimitAmountValue(100000L); // 1000.00
-        currentLimit.setCurrentLimitAmountDecimal(2);
-        detail.setCurrentLimitAmount(currentLimit);
-        UtilizedLimitAmount utilizedLimit = new UtilizedLimitAmount();
-        utilizedLimit.setUtilizedLimitAmountValue(0L);
-        utilizedLimit.setUtilizedLimitAmountDecimal(2);
-        detail.setUtilizedLimitAmount(utilizedLimit);
-        transactionLimitDetailList.add(detail);
-        responseWorkRecord.setTransactionLimitDetail(transactionLimitDetailList);
-        responseWork.setResponseWorkRecord(responseWorkRecord);
-        responsePayload.setResponseWork(responseWork);
-        limitEnquiryResponseDataWrapper.setResponsePayload(responsePayload);
-        lenient().when(limitEnquiryResponse.getCbHkHbapObsShrdClcTranLmtEnqWpbSrvOperationResponse()).thenReturn(limitEnquiryResponseDataWrapper);
-        lenient().when(restClientService.get(anyString(), anyMap(), eq(LimitEnquiryResponse.class), anyInt(), anyBoolean()))
-                .thenReturn(limitEnquiryResponse);
+        // Mock customer accounts
+        CustomerAccounts mockAccounts = new CustomerAccounts();
+        InvestmentAccount mockAccount = new InvestmentAccount();
+        mockAccount.setChecksum(ACCOUNT_CHECKSUM);
+        // Mock InvestmentAccountId fields if needed
+        // mockAccount.setInvestmentAccountId(...);
+        mockAccounts.setInvestmentAccountList(Collections.singletonList(mockAccount));
+        lenient().when(tradeTransferService.retrieveCustomerAccounts(anyMap())).thenReturn(mockAccounts);
 
-        RetrieveTransferAmountResponse transferAmountResponse = new RetrieveTransferAmountResponse();
-        RetrieveTransferAmountResponseData data = new RetrieveTransferAmountResponseData();
-        // 模拟已用次数少于配置的最大次数，使得 availableMonthlyCount > 0
-        data.setMonthlyTransferCount(2); // 已用2次
-        data.setMonthlyTransferAmount(BigDecimal.valueOf(100));
-        data.setYearlyTransferAmount(BigDecimal.valueOf(200));
-        transferAmountResponse.setData(data);
-        lenient().when(restClientService.get(contains("/trade-amount"), anyMap(), eq(RetrieveTransferAmountResponse.class), anyInt(), anyBoolean()))
-                .thenReturn(transferAmountResponse);
+        // Mock customer name and contact
+        PartyNameResponse mockName = new PartyNameResponse();
+        lenient().when(tradeTransferService.retrieveCustomerNamesWithCinNumber(anyString(), anyMap())).thenReturn(mockName);
+        PartyContactResponse mockContact = new PartyContactResponse();
+        lenient().when(tradeTransferService.retrieveCustomerPhoneNumberWithCinNumber(anyString(), anyMap())).thenReturn(mockContact);
 
-        RetrieveTransferLimitResponse response = tradeLimitService.retrieveLimitations(headers);
+        RetrieveTransferListResponse response = tradeTransferService.retrieveTransferList(
+                headers, "PENDING", Collections.singletonList(ACCOUNT_CHECKSUM), "{}", "PROD1", "SENS");
 
         assertThat(response).isNotNull();
-        // 验证 availableMonthlyCount = 5 (config) - 2 (used) = 3
-        assertThat(response.getData().getAvailableMonthlyTransferCount()).isEqualTo("3");
-        // 确保后续逻辑也执行，没有抛出异常
-        assertThat(response.getData().getAvailableMonthToDateAmount()).isNotNull();
-        assertThat(response.getData().getAvailableYearToDateAmount()).isNotNull();
+        assertThat(response.getData()).isEqualTo(mockData);
+        // Verify internal calls
+        verify(tradeTransferService).retrieveCustomerAccounts(anyMap());
+        verify(tradeTransferService).retrieveCustomerNamesWithCinNumber(eq(CUSTOMER_CIN), anyMap());
+        verify(tradeTransferService).retrieveCustomerPhoneNumberWithCinNumber(eq(CUSTOMER_CIN), anyMap());
+        verify(tradeTransferService).maskNamesInResponse(any(RetrieveTransferListResponseData.class));
     }
-    
+
     @Test
-    void testRetrieveLimitations_success() {
-        lenient().when(customerLimitConfig.getDailyAmount()).thenReturn(BigDecimal.valueOf(1000));
-        lenient().when(customerLimitConfig.getYearlyAmount()).thenReturn(BigDecimal.valueOf(10000));
-        lenient().when(customerLimitConfig.getMonthlyAmount()).thenReturn(BigDecimal.valueOf(5000));
-        lenient().when(customerLimitConfig.getMonthlyCount()).thenReturn(10);
+    void testRetrieveTransferDetail_success() {
+        RetrieveTransferDetailResponse mockResponse = new RetrieveTransferDetailResponse();
+        RetrieveTransferDetailResponseData mockData = new RetrieveTransferDetailResponseData();
+        mockData.setInvestmentAccount(new com.hsbc.trade.transfer.domain.cep.InvestmentAccount());
+        mockData.getInvestmentAccount().setAccountNumber("ACC987");
+        mockResponse.setData(mockData);
+        lenient().when(restClientService.get(anyString(), anyMap(), eq(RetrieveTransferDetailResponse.class), anyInt(), anyBoolean()))
+                .thenReturn(mockResponse);
 
-        LimitEnquiryResponse limitEnquiryResponse = mock(LimitEnquiryResponse.class);
-        LimitEnquiryResponsePayload limitEnquiryResponseDataWrapper = new LimitEnquiryResponsePayload();
-        LimitEnquiryResponseDataWrapper responsePayload = new LimitEnquiryResponseDataWrapper();
-        LimitEnquiryResponseRecord responseWork = new LimitEnquiryResponseRecord();
-        LimitEnquiryResponseData responseWorkRecord = new LimitEnquiryResponseData();
-        List<TransactionLimitDetailList> transactionLimitDetailList = new ArrayList<>();
-        TransactionLimitDetailList detail = new TransactionLimitDetailList();
-        detail.setLimitType("P2PS");
-        CurrentLimitAmount currentLimit = new CurrentLimitAmount();
-        currentLimit.setCurrentLimitAmountValue(100000L); // 1000.00
-        currentLimit.setCurrentLimitAmountDecimal(2);
-        detail.setCurrentLimitAmount(currentLimit);
-        UtilizedLimitAmount utilizedLimit = new UtilizedLimitAmount();
-        utilizedLimit.setUtilizedLimitAmountValue(20000L); // 200.00
-        utilizedLimit.setUtilizedLimitAmountDecimal(2);
-        detail.setUtilizedLimitAmount(utilizedLimit);
-        transactionLimitDetailList.add(detail);
-        responseWorkRecord.setTransactionLimitDetail(transactionLimitDetailList);
-        responseWork.setResponseWorkRecord(responseWorkRecord);
-        responsePayload.setResponseWork(responseWork);
-        limitEnquiryResponseDataWrapper.setResponsePayload(responsePayload);
-        lenient().when(limitEnquiryResponse.getCbHkHbapObsShrdClcTranLmtEnqWpbSrvOperationResponse()).thenReturn(limitEnquiryResponseDataWrapper);
-        lenient().when(restClientService.get(anyString(), anyMap(), eq(LimitEnquiryResponse.class), anyInt(), anyBoolean()))
-                .thenReturn(limitEnquiryResponse);
+        // Mock customer accounts
+        CustomerAccounts mockAccounts = new CustomerAccounts();
+        InvestmentAccount mockAccount = new InvestmentAccount();
+        mockAccount.setChecksum(ACCOUNT_CHECKSUM);
+        mockAccount.setInvestmentAccountId(new com.hsbc.trade.common.AccountId());
+        mockAccount.getInvestmentAccountId().setAccountNumber("ACC987");
+        mockAccounts.setInvestmentAccountList(Collections.singletonList(mockAccount));
+        lenient().when(tradeTransferService.retrieveCustomerAccounts(anyMap())).thenReturn(mockAccounts);
 
-        RetrieveTransferAmountResponse transferAmountResponse = new RetrieveTransferAmountResponse();
-        RetrieveTransferAmountResponseData data = new RetrieveTransferAmountResponseData();
-        data.setMonthlyTransferCount(2);
-        data.setMonthlyTransferAmount(BigDecimal.valueOf(100));
-        data.setYearlyTransferAmount(BigDecimal.valueOf(200));
-        transferAmountResponse.setData(data);
-        lenient().when(restClientService.get(contains("/trade-amount"), anyMap(), eq(RetrieveTransferAmountResponse.class), anyInt(), anyBoolean()))
-                .thenReturn(transferAmountResponse);
+        // Mock customer name and contact
+        PartyNameResponse mockName = new PartyNameResponse();
+        lenient().when(tradeTransferService.retrieveCustomerNamesWithCinNumber(anyString(), anyMap())).thenReturn(mockName);
+        PartyContactResponse mockContact = new PartyContactResponse();
+        lenient().when(tradeTransferService.retrieveCustomerPhoneNumberWithCinNumber(anyString(), anyMap())).thenReturn(mockContact);
 
-        RetrieveTransferLimitResponse response = tradeLimitService.retrieveLimitations(headers);
+        RetrieveTransferDetailResponse response = tradeTransferService.retrieveTransferDetail(headers, TRANSFER_REF);
 
         assertThat(response).isNotNull();
-        assertThat(response.getData().getMaxDailyLimitedAmount()).isEqualTo(BigDecimal.valueOf(1000));
-        assertThat(response.getData().getAvailableTodayAmount()).isEqualTo(BigDecimal.valueOf(800)); // 1000 - 200
-        assertThat(response.getData().getAvailableMonthlyTransferCount()).isEqualTo("8"); // 10 - 2
-        assertThat(response.getData().getAvailableMonthToDateAmount()).isEqualTo(BigDecimal.valueOf(4900)); // 5000 - 100
-        assertThat(response.getData().getAvailableYearToDateAmount()).isEqualTo(BigDecimal.valueOf(9800)); // 10000 - 200
-        assertThat(response.getData().getAsofDateTime()).isNotNull();
+        assertThat(response.getData()).isEqualTo(mockData);
+        assertThat(response.getData().getAccountChecksumIdentifier()).isEqualTo(ACCOUNT_CHECKSUM);
+        // Verify internal calls
+        verify(tradeTransferService).retrieveCustomerAccounts(anyMap());
+        verify(tradeTransferService).retrieveCustomerNamesWithCinNumber(eq(CUSTOMER_CIN), anyMap());
+        verify(tradeTransferService).retrieveCustomerPhoneNumberWithCinNumber(eq(CUSTOMER_CIN), anyMap());
+        verify(tradeTransferService).maskNamesInResponse(any(RetrieveTransferDetailResponseData.class));
+        verify(tradeTransferService).findAccountChecksumForAccountNumber(any(), eq("ACC987"));
     }
 
     @Test
-    void testRetrieveLimitations_dailyOverLimit_throwsException() {
-        lenient().when(customerLimitConfig.getDailyAmount()).thenReturn(BigDecimal.valueOf(100));
-        lenient().when(customerLimitConfig.getYearlyAmount()).thenReturn(BigDecimal.valueOf(10000));
-        lenient().when(customerLimitConfig.getMonthlyAmount()).thenReturn(BigDecimal.valueOf(5000));
-        lenient().when(customerLimitConfig.getMonthlyCount()).thenReturn(10);
+    void testRetrieveTransferDetail_accountNotFound_throwsBadRequest() {
+        RetrieveTransferDetailResponse mockResponse = new RetrieveTransferDetailResponse();
+        RetrieveTransferDetailResponseData mockData = new RetrieveTransferDetailResponseData();
+        mockData.setInvestmentAccount(new com.hsbc.trade.transfer.domain.cep.InvestmentAccount());
+        mockData.getInvestmentAccount().setAccountNumber("ACC987");
+        mockResponse.setData(mockData);
+        lenient().when(restClientService.get(anyString(), anyMap(), eq(RetrieveTransferDetailResponse.class), anyInt(), anyBoolean()))
+                .thenReturn(mockResponse);
 
-        LimitEnquiryResponse limitEnquiryResponse = mock(LimitEnquiryResponse.class);
-        LimitEnquiryResponsePayload limitEnquiryResponseDataWrapper = new LimitEnquiryResponsePayload();
-        LimitEnquiryResponseDataWrapper responsePayload = new LimitEnquiryResponseDataWrapper();
-        LimitEnquiryResponseRecord responseWork = new LimitEnquiryResponseRecord();
-        LimitEnquiryResponseData responseWorkRecord = new LimitEnquiryResponseData();
-        List<TransactionLimitDetailList> transactionLimitDetailList = new ArrayList<>();
-        TransactionLimitDetailList detail = new TransactionLimitDetailList();
-        detail.setLimitType("P2PS");
-        CurrentLimitAmount currentLimit = new CurrentLimitAmount();
-        currentLimit.setCurrentLimitAmountValue(10000L); // 100.00
-        currentLimit.setCurrentLimitAmountDecimal(2);
-        detail.setCurrentLimitAmount(currentLimit);
-        UtilizedLimitAmount utilizedLimit = new UtilizedLimitAmount();
-        utilizedLimit.setUtilizedLimitAmountValue(15000L); // 150.00
-        utilizedLimit.setUtilizedLimitAmountDecimal(2);
-        detail.setUtilizedLimitAmount(utilizedLimit);
-        transactionLimitDetailList.add(detail);
-        responseWorkRecord.setTransactionLimitDetail(transactionLimitDetailList);
-        responseWork.setResponseWorkRecord(responseWorkRecord);
-        responsePayload.setResponseWork(responseWork);
-        limitEnquiryResponseDataWrapper.setResponsePayload(responsePayload);
-        lenient().when(limitEnquiryResponse.getCbHkHbapObsShrdClcTranLmtEnqWpbSrvOperationResponse()).thenReturn(limitEnquiryResponseDataWrapper);
-        lenient().when(restClientService.get(anyString(), anyMap(), eq(LimitEnquiryResponse.class), anyInt(), anyBoolean()))
-                .thenReturn(limitEnquiryResponse);
+        // Mock customer accounts with a different account number
+        CustomerAccounts mockAccounts = new CustomerAccounts();
+        InvestmentAccount mockAccount = new InvestmentAccount();
+        mockAccount.setChecksum(ACCOUNT_CHECKSUM);
+        mockAccount.setInvestmentAccountId(new com.hsbc.trade.common.AccountId());
+        mockAccount.getInvestmentAccountId().setAccountNumber("ACC_DIFFERENT");
+        mockAccounts.setInvestmentAccountList(Collections.singletonList(mockAccount));
+        lenient().when(tradeTransferService.retrieveCustomerAccounts(anyMap())).thenReturn(mockAccounts);
 
-        RetrieveTransferAmountResponse transferAmountResponse = new RetrieveTransferAmountResponse();
-        RetrieveTransferAmountResponseData data = new RetrieveTransferAmountResponseData();
-        data.setMonthlyTransferCount(0);
-        data.setMonthlyTransferAmount(BigDecimal.ZERO);
-        data.setYearlyTransferAmount(BigDecimal.ZERO);
-        transferAmountResponse.setData(data);
-        lenient().when(restClientService.get(contains("/trade-amount"), anyMap(), eq(RetrieveTransferAmountResponse.class), anyInt(), anyBoolean()))
-                .thenReturn(transferAmountResponse);
+        // Mock customer name and contact
+        PartyNameResponse mockName = new PartyNameResponse();
+        lenient().when(tradeTransferService.retrieveCustomerNamesWithCinNumber(anyString(), anyMap())).thenReturn(mockName);
+        PartyContactResponse mockContact = new PartyContactResponse();
+        lenient().when(tradeTransferService.retrieveCustomerPhoneNumberWithCinNumber(anyString(), anyMap())).thenReturn(mockContact);
 
-        assertThrows(TransferLimitExceededException.class, () -> tradeLimitService.retrieveLimitations(headers));
-    }
-
-    // --- 新增的测试方法 ---
-
-    @Test
-    void testRetrieveLimitations_dailyLimitZeroAvailableButMaxIsZero_throwsException() {
-        lenient().when(customerLimitConfig.getDailyAmount()).thenReturn(BigDecimal.valueOf(100));
-        lenient().when(customerLimitConfig.getYearlyAmount()).thenReturn(BigDecimal.valueOf(10000));
-        lenient().when(customerLimitConfig.getMonthlyAmount()).thenReturn(BigDecimal.valueOf(5000));
-        lenient().when(customerLimitConfig.getMonthlyCount()).thenReturn(10);
-
-        LimitEnquiryResponse limitEnquiryResponse = mock(LimitEnquiryResponse.class);
-        LimitEnquiryResponsePayload limitEnquiryResponseDataWrapper = new LimitEnquiryResponsePayload();
-        LimitEnquiryResponseDataWrapper responsePayload = new LimitEnquiryResponseDataWrapper();
-        LimitEnquiryResponseRecord responseWork = new LimitEnquiryResponseRecord();
-        LimitEnquiryResponseData responseWorkRecord = new LimitEnquiryResponseData();
-        List<TransactionLimitDetailList> transactionLimitDetailList = new ArrayList<>();
-        TransactionLimitDetailList detail = new TransactionLimitDetailList();
-        detail.setLimitType("P2PS");
-        // 模拟已用金额等于最大金额，导致可用金额为0，但最大金额本身不为0
-        CurrentLimitAmount currentLimit = new CurrentLimitAmount();
-        currentLimit.setCurrentLimitAmountValue(10000L); // 100.00
-        currentLimit.setCurrentLimitAmountDecimal(2);
-        detail.setCurrentLimitAmount(currentLimit);
-        UtilizedLimitAmount utilizedLimit = new UtilizedLimitAmount();
-        utilizedLimit.setUtilizedLimitAmountValue(10000L); // 100.00
-        utilizedLimit.setUtilizedLimitAmountDecimal(2);
-        detail.setUtilizedLimitAmount(utilizedLimit);
-        transactionLimitDetailList.add(detail);
-        responseWorkRecord.setTransactionLimitDetail(transactionLimitDetailList);
-        responseWork.setResponseWorkRecord(responseWorkRecord);
-        responsePayload.setResponseWork(responseWork);
-        limitEnquiryResponseDataWrapper.setResponsePayload(responsePayload);
-        lenient().when(limitEnquiryResponse.getCbHkHbapObsShrdClcTranLmtEnqWpbSrvOperationResponse()).thenReturn(limitEnquiryResponseDataWrapper);
-        lenient().when(restClientService.get(anyString(), anyMap(), eq(LimitEnquiryResponse.class), anyInt(), anyBoolean()))
-                .thenReturn(limitEnquiryResponse);
-
-        RetrieveTransferAmountResponse transferAmountResponse = new RetrieveTransferAmountResponse();
-        RetrieveTransferAmountResponseData data = new RetrieveTransferAmountResponseData();
-        data.setMonthlyTransferCount(0);
-        data.setMonthlyTransferAmount(BigDecimal.ZERO);
-        data.setYearlyTransferAmount(BigDecimal.ZERO);
-        transferAmountResponse.setData(data);
-        lenient().when(restClientService.get(contains("/trade-amount"), anyMap(), eq(RetrieveTransferAmountResponse.class), anyInt(), anyBoolean()))
-                .thenReturn(transferAmountResponse);
-
-        assertThrows(TransferLimitExceededException.class, () -> tradeLimitService.retrieveLimitations(headers));
+        assertThrows(BadRequestException.class, () -> tradeTransferService.retrieveTransferDetail(headers, TRANSFER_REF));
     }
 
     @Test
-    void testRetrieveLimitations_dailyLimitNoP2PSRecord() {
-        lenient().when(customerLimitConfig.getDailyAmount()).thenReturn(BigDecimal.valueOf(1000));
-        lenient().when(customerLimitConfig.getYearlyAmount()).thenReturn(BigDecimal.valueOf(10000));
-        lenient().when(customerLimitConfig.getMonthlyAmount()).thenReturn(BigDecimal.valueOf(5000));
-        lenient().when(customerLimitConfig.getMonthlyCount()).thenReturn(10);
+    void testCreateTransfers_success() {
+        CreateTransferRequest request = new CreateTransferRequest();
+        // Assuming CreateTransferRequest has a getData() method returning a mutable object
+        // You need to populate the request object according to your data structure
+        // For example:
+        // CreateTransferRequestData requestData = new CreateTransferRequestData();
+        // ReceiverInfo receiver = new ReceiverInfo();
+        // receiver.setTransferQuantity(BigDecimal.ONE);
+        // requestData.setReceiverLists(Collections.singletonList(receiver));
+        // requestData.setRequestPriceValue(BigDecimal.TEN);
+        // requestData.setSenderInvestmentAccountChecksumIdentifier(ACCOUNT_CHECKSUM);
+        // request.setData(requestData);
 
-        LimitEnquiryResponse limitEnquiryResponse = mock(LimitEnquiryResponse.class);
-        LimitEnquiryResponsePayload limitEnquiryResponseDataWrapper = new LimitEnquiryResponsePayload();
-        LimitEnquiryResponseDataWrapper responsePayload = new LimitEnquiryResponseDataWrapper();
-        LimitEnquiryResponseRecord responseWork = new LimitEnquiryResponseRecord();
-        LimitEnquiryResponseData responseWorkRecord = new LimitEnquiryResponseData();
-        // 模拟返回列表，但没有P2PS类型的记录
-        List<TransactionLimitDetailList> transactionLimitDetailList = new ArrayList<>();
-        TransactionLimitDetailList otherDetail = new TransactionLimitDetailList();
-        otherDetail.setLimitType("OTHER");
-        transactionLimitDetailList.add(otherDetail);
-        responseWorkRecord.setTransactionLimitDetail(transactionLimitDetailList);
-        responseWork.setResponseWorkRecord(responseWorkRecord);
-        responsePayload.setResponseWork(responseWork);
-        limitEnquiryResponseDataWrapper.setResponsePayload(responsePayload);
-        lenient().when(limitEnquiryResponse.getCbHkHbapObsShrdClcTranLmtEnqWpbSrvOperationResponse()).thenReturn(limitEnquiryResponseDataWrapper);
-        lenient().when(restClientService.get(anyString(), anyMap(), eq(LimitEnquiryResponse.class), anyInt(), anyBoolean()))
-                .thenReturn(limitEnquiryResponse);
+        CreateTransferResponse mockResponse = new CreateTransferResponse();
+        lenient().when(restClientService.post(anyString(), anyMap(), eq(request), eq(CreateTransferResponse.class), anyInt(), anyBoolean()))
+                .thenReturn(mockResponse);
 
-        RetrieveTransferAmountResponse transferAmountResponse = new RetrieveTransferAmountResponse();
-        RetrieveTransferAmountResponseData data = new RetrieveTransferAmountResponseData();
-        data.setMonthlyTransferCount(2);
-        data.setMonthlyTransferAmount(BigDecimal.valueOf(100));
-        data.setYearlyTransferAmount(BigDecimal.valueOf(200));
-        transferAmountResponse.setData(data);
-        lenient().when(restClientService.get(contains("/trade-amount"), anyMap(), eq(RetrieveTransferAmountResponse.class), anyInt(), anyBoolean()))
-                .thenReturn(transferAmountResponse);
+        RetrieveTransferLimitResponse mockLimitResponse = new RetrieveTransferLimitResponse();
+        // Mock limit data to pass validation
+        lenient().when(tradeLimitService.retrieveLimitations(anyMap())).thenReturn(mockLimitResponse);
 
-        RetrieveTransferLimitResponse response = tradeLimitService.retrieveLimitations(headers);
+        // Mock SRE validation
+        lenient().doNothing().when(sreValidationService).handleSreValidateResponse(any());
+
+        // Mock account ID retrieval
+        lenient().when(tradeTransferService.retrieveAccountIdWithCheckSum(anyMap())).thenReturn(new com.hsbc.trade.common.AccountId());
+
+        // Mock customer name retrieval
+        PartyNameResponse mockName = new PartyNameResponse();
+        lenient().when(tradeTransferService.retrieveCustomerNamesWithCinNumber(anyString(), anyMap())).thenReturn(mockName);
+
+        // Mock gold price retrieval
+        GoldPriceResponse mockGoldPrice = new GoldPriceResponse();
+        GoldPriceResponseData mockGoldPriceData = new GoldPriceResponseData();
+        mockGoldPriceData.setGoldPriceAmount(BigDecimal.valueOf(2000));
+        mockGoldPriceData.setPublishTime("2023-10-27T10:00:00Z");
+        mockGoldPrice.setData(mockGoldPriceData);
+        lenient().when(tradeTransferService.retrieveGoldPrice(anyMap())).thenReturn(mockGoldPrice);
+
+        CreateTransferResponse response = tradeTransferService.createTransfers(headers, request);
 
         assertThat(response).isNotNull();
-        // 没有找到P2PS记录，可用金额应为0
-        assertThat(response.getData().getAvailableTodayAmount()).isEqualTo(BigDecimal.ZERO);
+        assertThat(response).isEqualTo(mockResponse);
+        // Verify internal calls
+        verify(tradeLimitService).retrieveLimitations(anyMap());
+        verify(tradeTransferService).retrieveAccountIdWithCheckSum(anyMap());
+        verify(sreValidationService).handleSreValidateResponse(any());
+        verify(tradeTransferService).retrieveCustomerNamesWithCinNumber(eq(CUSTOMER_CIN), anyMap());
+        verify(tradeTransferService).retrieveGoldPrice(anyMap());
+        verify(restClientService).post(anyString(), anyMap(), eq(request), eq(CreateTransferResponse.class), anyInt(), anyBoolean());
     }
 
     @Test
-    void testRetrieveLimitations_dailyLimitNullResponseDetails() {
-        lenient().when(customerLimitConfig.getDailyAmount()).thenReturn(BigDecimal.valueOf(1000));
-        lenient().when(customerLimitConfig.getYearlyAmount()).thenReturn(BigDecimal.valueOf(10000));
-        lenient().when(customerLimitConfig.getMonthlyAmount()).thenReturn(BigDecimal.valueOf(5000));
-        lenient().when(customerLimitConfig.getMonthlyCount()).thenReturn(10);
+    void testCreateTransfers_limitExceeded_throwsException() {
+        CreateTransferRequest request = new CreateTransferRequest();
+        // Populate request as needed
 
-        // 模拟整个响应对象为null
-        LimitEnquiryResponse limitEnquiryResponse = mock(LimitEnquiryResponse.class);
-        lenient().when(limitEnquiryResponse.getCbHkHbapObsShrdClcTranLmtEnqWpbSrvOperationResponse()).thenReturn(null);
-        lenient().when(restClientService.get(anyString(), anyMap(), eq(LimitEnquiryResponse.class), anyInt(), anyBoolean()))
-                .thenReturn(limitEnquiryResponse);
+        RetrieveTransferLimitResponse mockLimitResponse = new RetrieveTransferLimitResponse();
+        // Mock limit data to fail validation
+        lenient().when(tradeLimitService.retrieveLimitations(anyMap())).thenReturn(mockLimitResponse);
+        // You need to mock the response data inside mockLimitResponse to make totalTranAmount > availableAmount
+        // For example, if totalTranAmount is 100, mock available amounts to be less than 100
 
-        RetrieveTransferAmountResponse transferAmountResponse = new RetrieveTransferAmountResponse();
-        RetrieveTransferAmountResponseData data = new RetrieveTransferAmountResponseData();
-        data.setMonthlyTransferCount(2);
-        data.setMonthlyTransferAmount(BigDecimal.valueOf(100));
-        data.setYearlyTransferAmount(BigDecimal.valueOf(200));
-        transferAmountResponse.setData(data);
-        lenient().when(restClientService.get(contains("/trade-amount"), anyMap(), eq(RetrieveTransferAmountResponse.class), anyInt(), anyBoolean()))
-                .thenReturn(transferAmountResponse);
+        assertThrows(TransferLimitExceededException.class, () -> tradeTransferService.createTransfers(headers, request));
+    }
 
-        RetrieveTransferLimitResponse response = tradeLimitService.retrieveLimitations(headers);
+    @Test
+    void testModifyTransfers_success() {
+        UpdateTransferRequest request = new UpdateTransferRequest();
+        // Assuming UpdateTransferRequest has a getData() method returning a mutable object
+        // For example:
+        // UpdateTransferRequestData requestData = new UpdateTransferRequestData();
+        // requestData.setTransferActionCode(com.hsbc.trade.transfer.common.TransferActionCode.C); // or another code that doesn't trigger special logic
+        // request.setData(requestData);
+
+        UpdateTransferResponse mockResponse = new UpdateTransferResponse();
+        lenient().when(restClientService.put(anyString(), anyMap(), eq(request), eq(UpdateTransferResponse.class), anyInt(), anyBoolean()))
+                .thenReturn(mockResponse);
+
+        UpdateTransferResponse response = tradeTransferService.modifyTransfers(headers, request);
 
         assertThat(response).isNotNull();
-        // 响应为null，可用金额应为0
-        assertThat(response.getData().getAvailableTodayAmount()).isEqualTo(BigDecimal.ZERO);
+        assertThat(response).isEqualTo(mockResponse);
+        verify(restClientService).put(anyString(), anyMap(), eq(request), eq(UpdateTransferResponse.class), anyInt(), anyBoolean());
     }
 
     @Test
-    void testRetrieveLimitations_monthlyCountOverLimit_throwsException() {
-        lenient().when(customerLimitConfig.getDailyAmount()).thenReturn(BigDecimal.valueOf(1000));
-        lenient().when(customerLimitConfig.getYearlyAmount()).thenReturn(BigDecimal.valueOf(10000));
-        lenient().when(customerLimitConfig.getMonthlyAmount()).thenReturn(BigDecimal.valueOf(5000));
-        lenient().when(customerLimitConfig.getMonthlyCount()).thenReturn(5); // 设置为5次
+    void testModifyTransfers_AcceptAction_success() {
+        UpdateTransferRequest request = new UpdateTransferRequest();
+        // Assuming UpdateTransferRequest has a getData() method returning a mutable object
+        // For example:
+        // UpdateTransferRequestData requestData = new UpdateTransferRequestData();
+        // requestData.setTransferActionCode(com.hsbc.trade.transfer.common.TransferActionCode.A); // ACCEPT
+        // requestData.setReceiverInvestmentAccountChecksumIdentifier(ACCOUNT_CHECKSUM);
+        // requestData.setReceiverCustomerInternalNumber("RECEIVER_CIN");
+        // request.setData(requestData);
 
-        LimitEnquiryResponse limitEnquiryResponse = mock(LimitEnquiryResponse.class);
-        LimitEnquiryResponsePayload limitEnquiryResponseDataWrapper = new LimitEnquiryResponsePayload();
-        LimitEnquiryResponseDataWrapper responsePayload = new LimitEnquiryResponseDataWrapper();
-        LimitEnquiryResponseRecord responseWork = new LimitEnquiryResponseRecord();
-        LimitEnquiryResponseData responseWorkRecord = new LimitEnquiryResponseData();
-        List<TransactionLimitDetailList> transactionLimitDetailList = new ArrayList<>();
-        TransactionLimitDetailList detail = new TransactionLimitDetailList();
-        detail.setLimitType("P2PS");
-        CurrentLimitAmount currentLimit = new CurrentLimitAmount();
-        currentLimit.setCurrentLimitAmountValue(100000L); // 1000.00
-        currentLimit.setCurrentLimitAmountDecimal(2);
-        detail.setCurrentLimitAmount(currentLimit);
-        UtilizedLimitAmount utilizedLimit = new UtilizedLimitAmount();
-        utilizedLimit.setUtilizedLimitAmountValue(0L);
-        utilizedLimit.setUtilizedLimitAmountDecimal(2);
-        detail.setUtilizedLimitAmount(utilizedLimit);
-        transactionLimitDetailList.add(detail);
-        responseWorkRecord.setTransactionLimitDetail(transactionLimitDetailList);
-        responseWork.setResponseWorkRecord(responseWorkRecord);
-        responsePayload.setResponseWork(responseWork);
-        limitEnquiryResponseDataWrapper.setResponsePayload(responsePayload);
-        lenient().when(limitEnquiryResponse.getCbHkHbapObsShrdClcTranLmtEnqWpbSrvOperationResponse()).thenReturn(limitEnquiryResponseDataWrapper);
-        lenient().when(restClientService.get(anyString(), anyMap(), eq(LimitEnquiryResponse.class), anyInt(), anyBoolean()))
-                .thenReturn(limitEnquiryResponse);
+        UpdateTransferResponse mockResponse = new UpdateTransferResponse();
+        lenient().when(restClientService.put(anyString(), anyMap(), eq(request), eq(UpdateTransferResponse.class), anyInt(), anyBoolean()))
+                .thenReturn(mockResponse);
 
-        RetrieveTransferAmountResponse transferAmountResponse = new RetrieveTransferAmountResponse();
-        RetrieveTransferAmountResponseData data = new RetrieveTransferAmountResponseData();
-        // 模拟已用次数等于配置的最大次数
-        data.setMonthlyTransferCount(5); // 已用5次
-        data.setMonthlyTransferAmount(BigDecimal.valueOf(100));
-        data.setYearlyTransferAmount(BigDecimal.valueOf(200));
-        transferAmountResponse.setData(data);
-        lenient().when(restClientService.get(contains("/trade-amount"), anyMap(), eq(RetrieveTransferAmountResponse.class), anyInt(), anyBoolean()))
-                .thenReturn(transferAmountResponse);
+        // Mock SRE validation for ACCEPT
+        lenient().doNothing().when(sreValidationService).handleSreValidateResponse(any());
 
-        assertThrows(TransferLimitExceededException.class, () -> tradeLimitService.retrieveLimitations(headers));
+        // Mock account ID retrieval for ACCEPT
+        lenient().when(tradeTransferService.retrieveAccountIdWithCheckSum(anyMap())).thenReturn(new com.hsbc.trade.common.AccountId());
+
+        // Mock gold price retrieval for ACCEPT
+        GoldPriceResponse mockGoldPrice = new GoldPriceResponse();
+        GoldPriceResponseData mockGoldPriceData = new GoldPriceResponseData();
+        mockGoldPriceData.setGoldPriceAmount(BigDecimal.valueOf(2000));
+        mockGoldPriceData.setPublishTime("2023-10-27T10:00:00Z");
+        mockGoldPrice.setData(mockGoldPriceData);
+        lenient().when(tradeTransferService.retrieveGoldPrice(anyMap())).thenReturn(mockGoldPrice);
+
+        UpdateTransferResponse response = tradeTransferService.modifyTransfers(headers, request);
+
+        assertThat(response).isNotNull();
+        assertThat(response).isEqualTo(mockResponse);
+        // Verify calls specific to ACCEPT action
+        verify(sreValidationService).handleSreValidateResponse(any());
+        verify(tradeTransferService).retrieveAccountIdWithCheckSum(anyMap());
+        verify(tradeTransferService).retrieveGoldPrice(anyMap());
+        verify(restClientService).put(anyString(), anyMap(), eq(request), eq(UpdateTransferResponse.class), anyInt(), anyBoolean());
     }
 
     @Test
-    void testRetrieveLimitations_monthlyAmountOverLimit_throwsException() {
-        lenient().when(customerLimitConfig.getDailyAmount()).thenReturn(BigDecimal.valueOf(1000));
-        lenient().when(customerLimitConfig.getYearlyAmount()).thenReturn(BigDecimal.valueOf(10000));
-        lenient().when(customerLimitConfig.getMonthlyAmount()).thenReturn(BigDecimal.valueOf(500)); // 设置为500
-        lenient().when(customerLimitConfig.getMonthlyCount()).thenReturn(10);
+    void testModifyTransfers_RejectAction_success() {
+        UpdateTransferRequest request = new UpdateTransferRequest();
+        // Assuming UpdateTransferRequest has a getData() method returning a mutable object
+        // For example:
+        // UpdateTransferRequestData requestData = new UpdateTransferRequestData();
+        // requestData.setTransferActionCode(com.hsbc.trade.transfer.common.TransferActionCode.R); // REJECT
+        // request.setData(requestData);
 
-        LimitEnquiryResponse limitEnquiryResponse = mock(LimitEnquiryResponse.class);
-        LimitEnquiryResponsePayload limitEnquiryResponseDataWrapper = new LimitEnquiryResponsePayload();
-        LimitEnquiryResponseDataWrapper responsePayload = new LimitEnquiryResponseDataWrapper();
-        LimitEnquiryResponseRecord responseWork = new LimitEnquiryResponseRecord();
-        LimitEnquiryResponseData responseWorkRecord = new LimitEnquiryResponseData();
-        List<TransactionLimitDetailList> transactionLimitDetailList = new ArrayList<>();
-        TransactionLimitDetailList detail = new TransactionLimitDetailList();
-        detail.setLimitType("P2PS");
-        CurrentLimitAmount currentLimit = new CurrentLimitAmount();
-        currentLimit.setCurrentLimitAmountValue(100000L); // 1000.00
-        currentLimit.setCurrentLimitAmountDecimal(2);
-        detail.setCurrentLimitAmount(currentLimit);
-        UtilizedLimitAmount utilizedLimit = new UtilizedLimitAmount();
-        utilizedLimit.setUtilizedLimitAmountValue(0L);
-        utilizedLimit.setUtilizedLimitAmountDecimal(2);
-        detail.setUtilizedLimitAmount(utilizedLimit);
-        transactionLimitDetailList.add(detail);
-        responseWorkRecord.setTransactionLimitDetail(transactionLimitDetailList);
-        responseWork.setResponseWorkRecord(responseWorkRecord);
-        responsePayload.setResponseWork(responseWork);
-        limitEnquiryResponseDataWrapper.setResponsePayload(responsePayload);
-        lenient().when(limitEnquiryResponse.getCbHkHbapObsShrdClcTranLmtEnqWpbSrvOperationResponse()).thenReturn(limitEnquiryResponseDataWrapper);
-        lenient().when(restClientService.get(anyString(), anyMap(), eq(LimitEnquiryResponse.class), anyInt(), anyBoolean()))
-                .thenReturn(limitEnquiryResponse);
+        UpdateTransferResponse mockResponse = new UpdateTransferResponse();
+        lenient().when(restClientService.put(anyString(), anyMap(), eq(request), eq(UpdateTransferResponse.class), anyInt(), anyBoolean()))
+                .thenReturn(mockResponse);
 
-        RetrieveTransferAmountResponse transferAmountResponse = new RetrieveTransferAmountResponse();
-        RetrieveTransferAmountResponseData data = new RetrieveTransferAmountResponseData();
-        data.setMonthlyTransferCount(2);
-        // 模拟已用金额等于配置的最大金额
-        data.setMonthlyTransferAmount(BigDecimal.valueOf(500)); // 已用500
-        data.setYearlyTransferAmount(BigDecimal.valueOf(200));
-        transferAmountResponse.setData(data);
-        lenient().when(restClientService.get(contains("/trade-amount"), anyMap(), eq(RetrieveTransferAmountResponse.class), anyInt(), anyBoolean()))
-                .thenReturn(transferAmountResponse);
+        UpdateTransferResponse response = tradeTransferService.modifyTransfers(headers, request);
 
-        assertThrows(TransferLimitExceededException.class, () -> tradeLimitService.retrieveLimitations(headers));
+        assertThat(response).isNotNull();
+        assertThat(response).isEqualTo(mockResponse);
+        // Verify call to restClientService.put, receiver CIN might be set
+        verify(restClientService).put(anyString(), anyMap(), eq(request), eq(UpdateTransferResponse.class), anyInt(), anyBoolean());
     }
 
     @Test
-    void testRetrieveLimitations_yearlyAmountOverLimit_throwsException() {
-        lenient().when(customerLimitConfig.getDailyAmount()).thenReturn(BigDecimal.valueOf(1000));
-        lenient().when(customerLimitConfig.getYearlyAmount()).thenReturn(BigDecimal.valueOf(500)); // 设置为500
-        lenient().when(customerLimitConfig.getMonthlyAmount()).thenReturn(BigDecimal.valueOf(5000));
-        lenient().when(customerLimitConfig.getMonthlyCount()).thenReturn(10);
+    void testExtractAccountIdMap_emptyAccounts_returnsEmptyMap() {
+        CustomerAccounts accounts = new CustomerAccounts();
+        accounts.setInvestmentAccountList(null); // or an empty list
 
-        LimitEnquiryResponse limitEnquiryResponse = mock(LimitEnquiryResponse.class);
-        LimitEnquiryResponsePayload limitEnquiryResponseDataWrapper = new LimitEnquiryResponsePayload();
-        LimitEnquiryResponseDataWrapper responsePayload = new LimitEnquiryResponseDataWrapper();
-        LimitEnquiryResponseRecord responseWork = new LimitEnquiryResponseRecord();
-        LimitEnquiryResponseData responseWorkRecord = new LimitEnquiryResponseData();
-        List<TransactionLimitDetailList> transactionLimitDetailList = new ArrayList<>();
-        TransactionLimitDetailList detail = new TransactionLimitDetailList();
-        detail.setLimitType("P2PS");
-        CurrentLimitAmount currentLimit = new CurrentLimitAmount();
-        currentLimit.setCurrentLimitAmountValue(100000L); // 1000.00
-        currentLimit.setCurrentLimitAmountDecimal(2);
-        detail.setCurrentLimitAmount(currentLimit);
-        UtilizedLimitAmount utilizedLimit = new UtilizedLimitAmount();
-        utilizedLimit.setUtilizedLimitAmountValue(0L);
-        utilizedLimit.setUtilizedLimitAmountDecimal(2);
-        detail.setUtilizedLimitAmount(utilizedLimit);
-        transactionLimitDetailList.add(detail);
-        responseWorkRecord.setTransactionLimitDetail(transactionLimitDetailList);
-        responseWork.setResponseWorkRecord(responseWorkRecord);
-        responsePayload.setResponseWork(responseWork);
-        limitEnquiryResponseDataWrapper.setResponsePayload(responsePayload);
-        lenient().when(limitEnquiryResponse.getCbHkHbapObsShrdClcTranLmtEnqWpbSrvOperationResponse()).thenReturn(limitEnquiryResponseDataWrapper);
-        lenient().when(restClientService.get(anyString(), anyMap(), eq(LimitEnquiryResponse.class), anyInt(), anyBoolean()))
-                .thenReturn(limitEnquiryResponse);
+        Map<String, String> result = tradeTransferService.extractAccountIdMap(accounts);
 
-        RetrieveTransferAmountResponse transferAmountResponse = new RetrieveTransferAmountResponse();
-        RetrieveTransferAmountResponseData data = new RetrieveTransferAmountResponseData();
-        data.setMonthlyTransferCount(2);
-        data.setMonthlyTransferAmount(BigDecimal.valueOf(100));
-        // 模拟已用金额等于配置的最大金额
-        data.setYearlyTransferAmount(BigDecimal.valueOf(500)); // 已用500
-        transferAmountResponse.setData(data);
-        lenient().when(restClientService.get(contains("/trade-amount"), anyMap(), eq(RetrieveTransferAmountResponse.class), anyInt(), anyBoolean()))
-                .thenReturn(transferAmountResponse);
-
-        assertThrows(TransferLimitExceededException.class, () -> tradeLimitService.retrieveLimitations(headers));
+        assertThat(result).isNotNull().isEmpty();
     }
 
     @Test
-    void testRetrieveTransferAmount_serviceThrowsException() {
-        lenient().when(restClientService.get(eq("https://data.example.com/trade-amount"), anyMap(), eq(RetrieveTransferAmountResponse.class), anyInt(), anyBoolean()))
-                .thenThrow(new RuntimeException("Service Error"));
+    void testExtractAccountIdMap_validAccounts_returnsMap() {
+        CustomerAccounts accounts = new CustomerAccounts();
+        InvestmentAccount account1 = new InvestmentAccount();
+        account1.setChecksum("CHK1");
+        com.hsbc.trade.common.AccountId id1 = new com.hsbc.trade.common.AccountId();
+        id1.setCountryAccountCode("HK");
+        id1.setGroupMemberAccountCode("004");
+        id1.setAccountNumber("12345678");
+        id1.setAccountProductTypeCode("GOLD");
+        id1.setAccountTypeCode("INVEST");
+        id1.setAccountCurrencyCode("HKD");
+        account1.setInvestmentAccountId(id1);
 
-        assertThrows(InternalServerErrorException.class, () -> tradeLimitService.retrieveTransferAmount(headers));
-        // 验证抛出的错误码
-        try {
-            tradeLimitService.retrieveTransferAmount(headers);
-        } catch (InternalServerErrorException e) {
-            // 检查错误消息是否包含期望的错误码
-            assertThat(e.getMessage()).contains(ErrorCodes.UNEXPECTED_RESULT_SRBP_ONLINE_ERROR.getValue());
-        }
+        InvestmentAccount account2 = new InvestmentAccount();
+        account2.setChecksum("CHK2");
+        com.hsbc.trade.common.AccountId id2 = new com.hsbc.trade.common.AccountId();
+        id2.setCountryAccountCode("US");
+        id2.setGroupMemberAccountCode("001");
+        id2.setAccountNumber("87654321");
+        id2.setAccountProductTypeCode("SILVER");
+        id2.setAccountTypeCode("INVEST");
+        id2.setAccountCurrencyCode("USD");
+        account2.setInvestmentAccountId(id2);
+
+        accounts.setInvestmentAccountList(Arrays.asList(account1, account2));
+
+        Map<String, String> result = tradeTransferService.extractAccountIdMap(accounts);
+
+        assertThat(result).hasSize(2);
+        assertThat(result).containsEntry("CHK1", "countryAccountCode=HK;groupMemberAccountCode=004;accountNumber=12345678;accountProductTypeCode=GOLD;accountTypeCode=INVEST;accountCurrencyCode=HKD");
+        assertThat(result).containsEntry("CHK2", "countryAccountCode=US;groupMemberAccountCode=001;accountNumber=87654321;accountProductTypeCode=SILVER;accountTypeCode=INVEST;accountCurrencyCode=USD");
     }
 
     @Test
-    void testFetchLimitEnquiryResponse_serviceThrowsException() {
-        lenient().when(restClientService.get(anyString(), anyMap(), eq(LimitEnquiryResponse.class), anyInt(), anyBoolean()))
-                .thenThrow(new RuntimeException("CLC Error"));
+    void testFindAccountChecksumForAccountNumber_found_returnsChecksum() {
+        CustomerAccounts accounts = new CustomerAccounts();
+        InvestmentAccount account1 = new InvestmentAccount();
+        account1.setChecksum(ACCOUNT_CHECKSUM);
+        com.hsbc.trade.common.AccountId id1 = new com.hsbc.trade.common.AccountId();
+        id1.setAccountNumber("TARGET_ACC");
+        account1.setInvestmentAccountId(id1);
 
-        assertThrows(InternalServerErrorException.class, () -> tradeLimitService.retrieveLimitations(headers));
-        // 验证抛出的错误码
-        try {
-            tradeLimitService.retrieveLimitations(headers);
-        } catch (InternalServerErrorException e) {
-            // 检查错误消息是否包含期望的错误码
-            assertThat(e.getMessage()).contains(ExceptionMessageEnum.CLC_UNEXPECTED_ERROR.getCode());
-        }
+        InvestmentAccount account2 = new InvestmentAccount();
+        account2.setChecksum("CHK2");
+        com.hsbc.trade.common.AccountId id2 = new com.hsbc.trade.common.AccountId();
+        id2.setAccountNumber("OTHER_ACC");
+        account2.setInvestmentAccountId(id2);
+
+        accounts.setInvestmentAccountList(Arrays.asList(account1, account2));
+
+        String result = tradeTransferService.findAccountChecksumForAccountNumber(accounts, "TARGET_ACC");
+
+        assertThat(result).isEqualTo(ACCOUNT_CHECKSUM);
     }
 
     @Test
-    void testGetValueDate_returnsCurrentDate() {
-        String expectedDate = LocalDate.now().format(java.time.format.DateTimeFormatter.ofPattern("yyyy-MM-dd"));
-        String actualDate = tradeLimitService.getValueDate();
-        assertThat(actualDate).isEqualTo(expectedDate);
+    void testFindAccountChecksumForAccountNumber_notFound_returnsNull() {
+        CustomerAccounts accounts = new CustomerAccounts();
+        InvestmentAccount account1 = new InvestmentAccount();
+        account1.setChecksum(ACCOUNT_CHECKSUM);
+        com.hsbc.trade.common.AccountId id1 = new com.hsbc.trade.common.AccountId();
+        id1.setAccountNumber("OTHER_ACC");
+        account1.setInvestmentAccountId(id1);
+
+        accounts.setInvestmentAccountList(Collections.singletonList(account1));
+
+        String result = tradeTransferService.findAccountChecksumForAccountNumber(accounts, "TARGET_ACC");
+
+        assertThat(result).isNull();
     }
 
     @Test
-    void testBuildBaseHeaders_constructsCorrectly() {
-        Map<String, String> inputHeaders = new HashMap<>();
-        inputHeaders.put(HTTPRequestHeaderConstants.X_HSBC_Customer_Id, "CUST123");
-        inputHeaders.put("SomeOtherHeader", "SomeValue");
+    void testValidateTransferLimits_exceedsDaily_throwsException() {
+        RetrieveTransferLimitResponse limitResponse = new RetrieveTransferLimitResponse();
+        // Mock data: available < total
+        lenient().when(limitResponse.getData().getAvailableTodayAmount()).thenReturn(BigDecimal.valueOf(50));
+        lenient().when(limitResponse.getData().getMaxDailyLimitedAmount()).thenReturn(BigDecimal.valueOf(100));
 
-        Map<String, String> baseHeaders = tradeLimitService.buildBaseHeaders(inputHeaders);
-
-        assertThat(baseHeaders).isNotNull();
-        assertThat(baseHeaders).containsEntry(HTTPRequestHeaderConstants.X_HSBC_Customer_Id, "CUST123");
-        assertThat(baseHeaders).containsEntry("SomeOtherHeader", "SomeValue");
-        assertThat(baseHeaders).containsKey(HTTPRequestHeaderConstants.X_HSBC_E2E_Trust_Token);
-        assertThat(baseHeaders).containsEntry(HTTPRequestHeaderConstants.X_HSBC_Source_System_Id, "SRC");
-        // Add more assertions for other expected headers...
+        assertThrows(TransferLimitExceededException.class, () -> tradeTransferService.validateTransferLimits(BigDecimal.valueOf(100), limitResponse));
     }
 
     @Test
-    void testBuildSensitiveHeaders_constructsCorrectly() {
-        Map<String, String> baseHeaders = new HashMap<>();
-        baseHeaders.put("ExistingHeader", "ExistingValue");
+    void testValidateTransferLimits_exceedsMonthly_throwsException() {
+        RetrieveTransferLimitResponse limitResponse = new RetrieveTransferLimitResponse();
+        // Mock data: available < total, daily passes
+        lenient().when(limitResponse.getData().getAvailableTodayAmount()).thenReturn(BigDecimal.valueOf(200));
+        lenient().when(limitResponse.getData().getMaxDailyLimitedAmount()).thenReturn(BigDecimal.valueOf(200));
+        lenient().when(limitResponse.getData().getAvailableMonthToDateAmount()).thenReturn(BigDecimal.valueOf(50));
+        lenient().when(limitResponse.getData().getMaxMonthlyLimitedAmount()).thenReturn(BigDecimal.valueOf(100));
 
-        String sensitiveKey = "secretKey";
-        String sensitiveValue = "secretValue";
-        Map<String, String> sensitiveHeaders = tradeLimitService.buildSensitiveHeaders(baseHeaders, sensitiveKey, sensitiveValue);
-
-        assertThat(sensitiveHeaders).isNotSameAs(baseHeaders);
-        assertThat(sensitiveHeaders).containsKey(HTTPRequestHeaderConstants.X_HSBC_Sensitive_Data);
-        // You could add more specific assertions on the JSON content if needed.
-        assertThat(sensitiveHeaders).containsEntry("ExistingHeader", "ExistingValue");
+        assertThrows(TransferLimitExceededException.class, () -> tradeTransferService.validateTransferLimits(BigDecimal.valueOf(100), limitResponse));
     }
+
+    @Test
+    void testValidateTransferLimits_exceedsYearly_throwsException() {
+        RetrieveTransferLimitResponse limitResponse = new RetrieveTransferLimitResponse();
+        // Mock data: available < total, daily and monthly pass
+        lenient().when(limitResponse.getData().getAvailableTodayAmount()).thenReturn(BigDecimal.valueOf(200));
+        lenient().when(limitResponse.getData().getMaxDailyLimitedAmount()).thenReturn(BigDecimal.valueOf(200));
+        lenient().when(limitResponse.getData().getAvailableMonthToDateAmount()).thenReturn(BigDecimal.valueOf(200));
+        lenient().when(limitResponse.getData().getMaxMonthlyLimitedAmount()).thenReturn(BigDecimal.valueOf(200));
+        lenient().when(limitResponse.getData().getAvailableYearToDateAmount()).thenReturn(BigDecimal.valueOf(50));
+        lenient().when(limitResponse.getData().getMaxYearlyLimitedAmount()).thenReturn(BigDecimal.valueOf(100));
+
+        assertThrows(TransferLimitExceededException.class, () -> tradeTransferService.validateTransferLimits(BigDecimal.valueOf(100), limitResponse));
+    }
+
+    @Test
+    void testValidateTransferLimits_withinLimits_noException() {
+        RetrieveTransferLimitResponse limitResponse = new RetrieveTransferLimitResponse();
+        // Mock data: available > total for all limits
+        lenient().when(limitResponse.getData().getAvailableTodayAmount()).thenReturn(BigDecimal.valueOf(200));
+        lenient().when(limitResponse.getData().getMaxDailyLimitedAmount()).thenReturn(BigDecimal.valueOf(200));
+        lenient().when(limitResponse.getData().getAvailableMonthToDateAmount()).thenReturn(BigDecimal.valueOf(200));
+        lenient().when(limitResponse.getData().getMaxMonthlyLimitedAmount()).thenReturn(BigDecimal.valueOf(200));
+        lenient().when(limitResponse.getData().getAvailableYearToDateAmount()).thenReturn(BigDecimal.valueOf(200));
+        lenient().when(limitResponse.getData().getMaxYearlyLimitedAmount()).thenReturn(BigDecimal.valueOf(200));
+
+        // Should not throw
+        tradeTransferService.validateTransferLimits(BigDecimal.valueOf(100), limitResponse);
+    }
+
+    // Note: Masking methods (maskNamesInResponse, maskFirstNameAndMiddleName) are complex due to reflection.
+    // It's often better to test them indirectly through the methods that call them (retrieveTransferList, retrieveTransferDetail)
+    // or refactor the masking logic into a separate, more testable class/service.
+    // For now, we'll focus on the other public methods.
 }
