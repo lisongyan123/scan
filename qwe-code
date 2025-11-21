@@ -1,0 +1,174 @@
+import com.hsbc.trade.common.AccountId;
+import com.hsbc.trade.service.RestClientService;
+import com.hsbc.trade.transfer.domain.RetrieveCustomerAccountsIdListResponse;
+import com.hsbc.trade.transfer.domain.account.CustomerAccounts;
+import com.hsbc.trade.transfer.domain.cep.PartyNameResponse;
+import com.hsbc.trade.transfer.domain.mds.GoldPriceResponse;
+import com.hsbc.trade.transfer.service.impl.TradeTransferServiceImpl;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.extension.ExtendWith;
+import org.mockito.Mock;
+import org.mockito.junit.jupiter.MockitoExtension;
+import org.springframework.test.util.ReflectionTestUtils;
+
+import java.util.HashMap;
+import java.util.Map;
+
+import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyInt;
+import static org.mockito.ArgumentMatchers.anyBoolean;
+import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.when;
+
+@ExtendWith(MockitoExtension.class)
+class TradeTransferServiceImplTest {
+
+    @Mock
+    private RestClientService mockRestClientService;
+
+    // 假设其他依赖也需要 Mock 或实例化
+    // @Mock private E2ETrustTokenUtil mockE2ETrustTokenUtil;
+    // @Mock private DuplicateSubmitPreventionService mockDuplicateSubmitPreventionService;
+    // @Mock private TradeLimitServiceImpl mockTradeLimitService;
+
+    private TradeTransferServiceImpl tradeTransferService;
+
+    @BeforeEach
+    void setUp() {
+        // 直接注入 Mock 的 RestClientService
+        tradeTransferService = new TradeTransferServiceImpl(mockRestClientService, null, null, null); // 需要处理其他依赖
+
+        // 或者，如果构造函数注入不可行，也可以通过反射注入
+        // tradeTransferService = new TradeTransferServiceImpl(); // 假设有一个无参构造函数或依赖注入
+        // ReflectionTestUtils.setField(tradeTransferService, "restClientService", mockRestClientService);
+
+        // 设置 URL 等配置值，以便 UriComponentsBuilder 等能正常工作
+        ReflectionTestUtils.setField(tradeTransferService, "tradeOnlineUrl", "http://test-trade-online.com");
+        ReflectionTestUtils.setField(tradeTransferService, "accountsMapUrl", "http://test-accounts-map.com");
+        ReflectionTestUtils.setField(tradeTransferService, "cepPartyNameUrl", "http://test-cep-party-name.com");
+        ReflectionTestUtils.setField(tradeTransferService, "cepPartyContactUrl", "http://test-cep-party-contact.com");
+        ReflectionTestUtils.setField(tradeTransferService, "mdsGoldQuotesUrl", "http://test-mds-gold.com");
+        ReflectionTestUtils.setField(tradeTransferService, "customerAccountUrl", "http://test-customer-account.com/accounts");
+    }
+
+    @Test
+    void testRetrieveCustomerAccounts_MockRestClient() {
+        // Arrange
+        Map<String, String> requestHeaders = new HashMap<>();
+        requestHeaders.put("some-header", "some-value");
+        // ... 添加必要的请求头，如 X_HSBC_CUSTOMER_ID ...
+
+        CustomerAccounts mockCustomerAccounts = new CustomerAccounts(); // 创建一个模拟的响应对象
+        // ... 设置 mockCustomerAccounts 的属性 ...
+
+        // Mock RestClientService.get 方法，当调用 retrieveCustomerAccounts 时会触发
+        // 注意：这里的 URL 需要与 retrieveCustomerAccounts 方法中构建的 URL 一致
+        String expectedUrl = "http://test-accounts-map.com/accounts-map?consumerId=DAC";
+        when(mockRestClientService.get(
+                eq(expectedUrl), // 匹配 URL
+                any(Map.class),  // 匹配请求头 Map
+                eq(CustomerAccounts.class), // 匹配返回类型
+                anyInt(),        // 匹配 timeout
+                anyBoolean()     // 匹配 printMessageLog
+        )).thenReturn(mockCustomerAccounts);
+
+        // Act
+        CustomerAccounts result = tradeTransferService.retrieveCustomerAccounts(requestHeaders);
+
+        // Assert
+        assertNotNull(result);
+        // 可以进一步断言 result 的内容是否符合 mockCustomerAccounts
+    }
+
+    @Test
+    void testRetrieveCustomerNamesWithCinNumber_MockRestClient() {
+        // Arrange
+        String cinNumber = "TEST_CIN_123";
+        Map<String, String> requestHeaders = new HashMap<>();
+        // ... 添加必要的请求头 ...
+
+        PartyNameResponse mockResponse = new PartyNameResponse(); // 创建一个模拟的响应对象
+        // ... 设置 mockResponse 的属性 ...
+
+        // Mock RestClientService.get 方法，当调用 retrieveCustomerNamesWithCinNumber 时会触发
+        // 注意：这里的 URL 需要与方法中使用的 cepPartyNameUrl 一致
+        when(mockRestClientService.get(
+                eq("http://test-cep-party-name.com"), // 匹配 URL
+                any(Map.class), // 匹配请求头 Map
+                eq(PartyNameResponse.class), // 匹配返回类型
+                anyInt(),       // 匹配 timeout
+                anyBoolean()    // 匹配 printMessageLog
+        )).thenReturn(mockResponse);
+
+        // Act
+        PartyNameResponse result = tradeTransferService.retrieveCustomerNamesWithCinNumber(cinNumber, requestHeaders);
+
+        // Assert
+        assertNotNull(result);
+        // 可以进一步断言 result 的内容是否符合 mockResponse
+    }
+
+    @Test
+    void testRetrieveGoldPrice_MockRestClient() {
+         // Arrange
+         Map<String, String> requestHeaders = new HashMap<>();
+         // ... 添加必要的请求头 ...
+
+         GoldPriceResponse mockResponse = new GoldPriceResponse(); // 创建一个模拟的响应对象
+         // ... 设置 mockResponse 的属性 ...
+
+         // Mock RestClientService.get 方法，当调用 retrieveGoldPrice 时会触发
+         // 注意：这里的 URL 需要与方法中构建的 URL (mdsGoldQuotesUrl + "XGTHKD") 一致
+         String expectedUrl = "http://test-mds-gold.com/XGTHKD"; // 假设路径是这样拼接的
+         when(mockRestClientService.get(
+                 eq(expectedUrl), // 匹配 URL
+                 any(Map.class),  // 匹配请求头 Map
+                 eq(GoldPriceResponse.class), // 匹配返回类型
+                 anyInt(),        // 匹配 timeout
+                 anyBoolean()     // 匹配 printMessageLog
+         )).thenReturn(mockResponse);
+
+         // Act
+         GoldPriceResponse result = tradeTransferService.retrieveGoldPrice(requestHeaders);
+
+         // Assert
+         assertNotNull(result);
+         // 可以进一步断言 result 的内容是否符合 mockResponse
+    }
+
+    @Test
+    void testRetrieveAccountIdWithCheckSum_MockRestClient() {
+        // Arrange
+        Map<String, String> requestHeaders = new HashMap<>();
+        requestHeaders.put("checksum", "TEST_CHECKSUM"); // 需要提供一个 checksum
+        // ... 添加其他必要的请求头 ...
+
+        RetrieveCustomerAccountsIdListResponse mockResponse = new RetrieveCustomerAccountsIdListResponse(); // 创建一个模拟的响应对象
+        // ... 设置 mockResponse 的内容，例如 accountIdList ...
+        // AccountId mockAccountId = new AccountId();
+        // mockAccountId.setAccountNumber("123456789");
+        // mockResponse.setAccountIdList(List.of(mockAccountId));
+
+        // Mock RestClientService.get 方法，当调用 retrieveCustomerAccountIdsList (被 retrieveAccountIdWithCheckSum 调用) 时会触发
+        // 注意：这里的 URL 需要与 retrieveCustomerAccountIdsList 方法中构建的 URL 一致
+        String expectedUrl = "http://test-customer-account.com/accounts/mule?body=%7B%22checksumList%22%3A%5B%22TEST_CHECKSUM%22%5D%7D"; // URL 编码后的 body
+        when(mockRestClientService.get(
+                eq(expectedUrl), // 匹配 URL
+                any(Map.class),  // 匹配请求头 Map
+                eq(RetrieveCustomerAccountsIdListResponse.class), // 匹配返回类型
+                anyInt(),        // 匹配 timeout
+                anyBoolean()     // 匹配 printMessageLog
+        )).thenReturn(mockResponse);
+
+        // Act
+        AccountId result = tradeTransferService.retrieveAccountIdWithCheckSum(requestHeaders);
+
+        // Assert
+        assertNotNull(result);
+        // 可以进一步断言 result 的内容是否符合预期
+    }
+
+    // ... 可以为其他 retrieveCustomer... 方法添加更多测试 ...
+}
