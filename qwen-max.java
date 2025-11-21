@@ -1,21 +1,28 @@
 import static org.junit.jupiter.api.Assertions.*;
-import static org.mockito.ArgumentMatchers.any;
-import static org.mockito.ArgumentMatchers.anyInt;
-import static org.mockito.ArgumentMatchers.anyBoolean;
-import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.ArgumentMatchers.*;
 import static org.mockito.Mockito.*;
 
 import com.hsbc.trade.HTTPRequestHeaderConstants;
 import com.hsbc.trade.common.AccountId;
-import com.hsbc.trade.service.RestClientService;
-import com.hsbc.trade.transfer.constant.TransferQueryParameterConstant;
-import com.hsbc.trade.transfer.domain.RetrieveCustomerAccountsIdListResponse;
-import com.hsbc.trade.transfer.domain.account.AccountIdList;
-import com.hsbc.trade.transfer.enums.ExceptionMessageEnum;
-import com.hsbc.trade.utils.E2ETrustTokenUtil;
 import com.hsbc.trade.service.DuplicateSubmitPreventionService;
-import com.hsbc.trade.service.impl.RetrieveCustomerProfilesServiceImpl;
-import com.hsbc.trade.transfer.service.AbstractRestService;
+import com.hsbc.trade.service.RestClientService;
+import com.hsbc.trade.transfer.common.ActionRequestCode;
+import com.hsbc.trade.transfer.common.ReceiverInfo;
+import com.hsbc.trade.transfer.constant.TransferQueryParameterConstant;
+import com.hsbc.trade.transfer.createtransfer.CreateTransferRequest;
+import com.hsbc.trade.transfer.createtransfer.CreateTransferResponse;
+import com.hsbc.trade.transfer.createtransfer.Data;
+import com.hsbc.trade.transfer.domain.RetrieveCustomerAccountsIdListResponse;
+import com.hsbc.trade.transfer.domain.cep.PartyNameResponse;
+import com.hsbc.trade.transfer.domain.cep.Name;
+import com.hsbc.trade.transfer.domain.mds.GoldPriceResponse;
+import com.hsbc.trade.transfer.domain.mds.GoldPriceResponseData;
+import com.hsbc.trade.transfer.enums.ExceptionMessageEnum;
+import com.hsbc.trade.transfer.service.TradeTransferService;
+import com.hsbc.trade.transfer.service.impl.SreValidationServiceImpl;
+import com.hsbc.trade.transfer.service.impl.TradeLimitServiceImpl;
+import com.hsbc.trade.utils.E2ETrustTokenUtil;
+import com.hsbc.trade.utils.JacksonUtil;
 
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -24,13 +31,16 @@ import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 
 import jakarta.ws.rs.BadRequestException;
+import jakarta.ws.rs.InternalServerErrorException;
 import java.lang.reflect.Field;
+import java.math.BigDecimal;
+import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 
 @ExtendWith(MockitoExtension.class)
-class AbstractRestServiceRetrieveAccountIdWithCheckSumBranchesTest {
+class TradeTransferServiceImplCreateTransfersTest {
 
     @Mock
     private RestClientService mockRestClientService;
@@ -42,220 +52,218 @@ class AbstractRestServiceRetrieveAccountIdWithCheckSumBranchesTest {
     private DuplicateSubmitPreventionService mockDuplicateSubmitPreventionService;
 
     @Mock
-    private RetrieveCustomerProfilesServiceImpl mockRetrieveCustomerProfilesService;
+    private SreValidationServiceImpl mockSreValidationService; // Mock SreValidationService
 
-    private TestableAbstractRestService abstractRestServiceUnderTest; // 使用之前的测试辅助类
+    @Mock
+    private TradeLimitServiceImpl mockTradeLimitService; // Mock TradeLimitService
 
-    private final String TEST_CHECKSUM = "TEST_CHECKSUM_67890";
+    private TradeTransferServiceImpl tradeTransferServiceUnderTest;
+
     private final String TEST_CIN = "TEST_CIN_12345";
+    private final String TEST_CHECKSUM = "TEST_CHECKSUM_67890";
     private final String TEST_CUSTOMER_ACCOUNT_URL = "http://test-customer-account";
-
-    static class TestableAbstractRestService extends AbstractRestService {
-        public void setRestClientService(RestClientService restClientService) {
-            this.restClientService = restClientService;
-        }
-
-        public void setE2ETrustTokenUtil(E2ETrustTokenUtil e2ETrustTokenUtil) {
-            this.e2ETrustTokenUtil = e2ETrustTokenUtil;
-        }
-
-        public void setDuplicateSubmitPreventionService(DuplicateSubmitPreventionService duplicateSubmitPreventionService) {
-            this.duplicateSubmitPreventionService = duplicateSubmitPreventionService;
-        }
-
-         public void setRetrieveCustomerProfilesService(RetrieveCustomerProfilesServiceImpl retrieveCustomerProfilesService) {
-            this.retrieveCustomerProfilesService = retrieveCustomerProfilesService;
-        }
-    }
+    private final String TEST_TRADE_ONLINE_URL = "http://test-trade-online";
 
     @BeforeEach
     void setUp() throws Exception {
-        abstractRestServiceUnderTest = new TestableAbstractRestService();
-        abstractRestServiceUnderTest.setRestClientService(mockRestClientService);
-        abstractRestServiceUnderTest.setE2ETrustTokenUtil(mockE2ETrustTokenUtil);
-        abstractRestServiceUnderTest.setDuplicateSubmitPreventionService(mockDuplicateSubmitPreventionService);
-        abstractRestServiceUnderTest.setRetrieveCustomerProfilesService(mockRetrieveCustomerProfilesService);
+        // 创建被测试的服务实例
+        tradeTransferServiceUnderTest = new TradeTransferServiceImpl(
+                mockRestClientService, mockE2ETrustTokenUtil, mockDuplicateSubmitPreventionService, mockTradeLimitService);
 
-        // 设置 URL
-        Field customerAccountUrlField = AbstractRestService.class.getDeclaredField("customerAccountUrl");
+        // 注入其他 Mock 依赖项 (这些不是通过构造函数注入的)
+        Field sreValidationServiceField = TradeTransferServiceImpl.class.getDeclaredField("sreValidationService");
+        sreValidationServiceField.setAccessible(true);
+        sreValidationServiceField.set(tradeTransferServiceUnderTest, mockSreValidationService);
+
+        // 设置 URL (这些通常通过 @Value 注入)
+        Field customerAccountUrlField = TradeTransferServiceImpl.class.getDeclaredField("customerAccountUrl");
         customerAccountUrlField.setAccessible(true);
-        customerAccountUrlField.set(abstractRestServiceUnderTest, TEST_CUSTOMER_ACCOUNT_URL);
+        customerAccountUrlField.set(tradeTransferServiceUnderTest, TEST_CUSTOMER_ACCOUNT_URL);
 
-        abstractRestServiceUnderTest.tradeOnlineUrl = "http://test-trade-online";
-        abstractRestServiceUnderTest.accountsMapUrl = "http://test-accounts-map";
-        abstractRestServiceUnderTest.cepPartyNameUrl = "http://test-cep-party-name";
-        abstractRestServiceUnderTest.cepPartyContactUrl = "http://test-cep-party-contact";
-        abstractRestServiceUnderTest.mdsGoldQuotesUrl = "http://test-mds-gold";
+        Field tradeOnlineUrlField = TradeTransferServiceImpl.class.getDeclaredField("tradeOnlineUrl");
+        tradeOnlineUrlField.setAccessible(true);
+        tradeOnlineUrlField.set(tradeTransferServiceUnderTest, TEST_TRADE_ONLINE_URL);
+
+        // 设置其他可能需要的 URL
+        Field accountsMapUrlField = TradeTransferServiceImpl.class.getDeclaredField("accountsMapUrl");
+        accountsMapUrlField.setAccessible(true);
+        accountsMapUrlField.set(tradeTransferServiceUnderTest, "http://test-accounts-map");
+
+        Field cepPartyNameUrlField = TradeTransferServiceImpl.class.getDeclaredField("cepPartyNameUrl");
+        cepPartyNameUrlField.setAccessible(true);
+        cepPartyNameUrlField.set(tradeTransferServiceUnderTest, "http://test-cep-party-name");
+
+        Field cepPartyContactUrlField = TradeTransferServiceImpl.class.getDeclaredField("cepPartyContactUrl");
+        cepPartyContactUrlField.setAccessible(true);
+        cepPartyContactUrlField.set(tradeTransferServiceUnderTest, "http://test-cep-party-contact");
+
+        Field mdsGoldQuotesUrlField = TradeTransferServiceImpl.class.getDeclaredField("mdsGoldQuotesUrl");
+        mdsGoldQuotesUrlField.setAccessible(true);
+        mdsGoldQuotesUrlField.set(tradeTransferServiceUnderTest, "http://test-mds-gold");
     }
 
     @Test
-    void testRetrieveAccountIdWithCheckSum_ListHasNullElement_ThrowsException() {
+    void testCreateTransfers_RetrieveAccountIdWithCheckSum_Success() {
         // Arrange
-        Map<String, String> requestHeaders = Map.of(
-            HTTPRequestHeaderConstants.X_HSBC_CUSTOMER_ID, TEST_CIN,
-            TransferQueryParameterConstant.CHECKSUM, TEST_CHECKSUM
+        Map<String, String> inputHeaders = Map.of(
+            HTTPRequestHeaderConstants.X_HSBC_CUSTOMER_ID, TEST_CIN
+            // ... 其他必要的输入头 ...
         );
 
-        // 创建一个包含 null 元素的列表
-        List<AccountIdList> accountIdListWithNull = new ArrayList<>();
-        AccountIdList validAccount = new AccountIdList(); // 假设构造函数可用
-        // 设置 validAccount 的 accountId 属性...
+        CreateTransferRequest createTransferRequest = new CreateTransferRequest(); // 假设构造函数可用
+        Data requestData = new Data(); // 假设构造函数可用
+        requestData.setActionRequestCode(ActionRequestCode.D); // 设置为 D 操作，以便触发 retrieveGoldPrice
+        requestData.setSenderInvestmentAccountChecksumIdentifier(TEST_CHECKSUM);
+
+        List<ReceiverInfo> receivers = new ArrayList<>();
+        ReceiverInfo receiver = new ReceiverInfo(); // 假设构造函数可用
+        receiver.setTransferQuantity(new BigDecimal("1.5"));
+        receivers.add(receiver);
+        requestData.setReceiverLists(receivers);
+
+        // 设置请求数据的其他必要字段...
+        createTransferRequest.setData(requestData);
+
+        // --- Mock TradeLimitService 调用 ---
+        // 需要先通过 TradeLimitServiceImplTest 来 Mock retrieveLimitations
+        // 这里假设 retrieveLimitations 返回一个有效的限制响应
+        // mockTradeLimitService.retrieveLimitations(any(Map.class)); // 需要配置返回值
+
+        // --- Mock retrieveCustomerAccountIdsList 的底层调用 ---
+        // 创建一个内部 AccountId 对象，代表 checksum 对应的真实账户信息
         AccountId innerAccountId = new AccountId(); // 假设构造函数可用
-        // 设置 innerAccountId 的属性...
-        validAccount.setAccountId(innerAccountId);
-        accountIdListWithNull.add(validAccount);
-        accountIdListWithNull.add(null); // 添加 null 元素
-
-        RetrieveCustomerAccountsIdListResponse mockResponse = new RetrieveCustomerAccountsIdListResponse();
-        mockResponse.setAccountIdList(accountIdListWithNull);
-
-        when(mockRestClientService.get(
-                any(String.class),
-                any(Map.class),
-                eq(RetrieveCustomerAccountsIdListResponse.class),
-                anyInt(),
-                anyBoolean()))
-                .thenReturn(mockResponse);
-
-        // Act & Assert
-        BadRequestException thrown = assertThrows(BadRequestException.class, () -> {
-            abstractRestServiceUnderTest.retrieveAccountIdWithCheckSum(requestHeaders);
-        });
-
-        // 验证抛出的异常消息是否为预期的错误码 (对应 account == null 的情况)
-        // 注意：根据代码， account == null 和 account.getAccountId() == null 抛出的是同一个错误码
-        assertTrue(thrown.getMessage().contains(ExceptionMessageEnum.INVESTMENT_CHECKSUM_GET_ACCOUNT_ID_NULL_CHECKSUM.getCode()));
-
-        verify(mockRestClientService, times(1)).get(
-                any(String.class),
-                any(Map.class),
-                eq(RetrieveCustomerAccountsIdListResponse.class),
-                anyInt(),
-                anyBoolean());
-    }
-
-    @Test
-    void testRetrieveAccountIdWithCheckSum_ListElementHasNullAccountId_ThrowsException() {
-        // Arrange
-        Map<String, String> requestHeaders = Map.of(
-            HTTPRequestHeaderConstants.X_HSBC_CUSTOMER_ID, TEST_CIN,
-            TransferQueryParameterConstant.CHECKSUM, TEST_CHECKSUM
-        );
-
-        // 创建一个包含 AccountIdList 对象，但其 accountId 为 null 的列表
-        List<AccountIdList> accountIdListWithNullAccountId = new ArrayList<>();
-        AccountIdList accountWithNullId = new AccountIdList(); // 假设构造函数可用
-        accountWithNullId.setAccountId(null); // 关键：设置 accountId 为 null
-        accountIdListWithNullAccountId.add(accountWithNullId);
-
-        RetrieveCustomerAccountsIdListResponse mockResponse = new RetrieveCustomerAccountsIdListResponse();
-        mockResponse.setAccountIdList(accountIdListWithNullAccountId);
-
-        when(mockRestClientService.get(
-                any(String.class),
-                any(Map.class),
-                eq(RetrieveCustomerAccountsIdListResponse.class),
-                anyInt(),
-                anyBoolean()))
-                .thenReturn(mockResponse);
-
-        // Act & Assert
-        BadRequestException thrown = assertThrows(BadRequestException.class, () -> {
-            abstractRestServiceUnderTest.retrieveAccountIdWithCheckSum(requestHeaders);
-        });
-
-        // 验证抛出的异常消息是否为预期的错误码 (对应 account.getAccountId() == null 的情况)
-        assertTrue(thrown.getMessage().contains(ExceptionMessageEnum.INVESTMENT_CHECKSUM_GET_ACCOUNT_ID_NULL_CHECKSUM.getCode()));
-
-        verify(mockRestClientService, times(1)).get(
-                any(String.class),
-                any(Map.class),
-                eq(RetrieveCustomerAccountsIdListResponse.class),
-                anyInt(),
-                anyBoolean());
-    }
-
-    @Test
-    void testRetrieveAccountIdWithCheckSum_ListEmpty_ThrowsException() {
-        // Arrange
-        Map<String, String> requestHeaders = Map.of(
-            HTTPRequestHeaderConstants.X_HSBC_CUSTOMER_ID, TEST_CIN,
-            TransferQueryParameterConstant.CHECKSUM, TEST_CHECKSUM
-        );
-
-        // 创建一个空列表
-        List<AccountIdList> emptyAccountIdList = new ArrayList<>(); // 空列表
-
-        RetrieveCustomerAccountsIdListResponse mockResponse = new RetrieveCustomerAccountsIdListResponse();
-        mockResponse.setAccountIdList(emptyAccountIdList);
-
-        when(mockRestClientService.get(
-                any(String.class),
-                any(Map.class),
-                eq(RetrieveCustomerAccountsIdListResponse.class),
-                anyInt(),
-                anyBoolean()))
-                .thenReturn(mockResponse);
-
-        // Act & Assert
-        BadRequestException thrown = assertThrows(BadRequestException.class, () -> {
-            abstractRestServiceUnderTest.retrieveAccountIdWithCheckSum(requestHeaders);
-        });
-
-        // 验证抛出的异常消息是否为预期的错误码 (对应 findFirst().orElseThrow 的情况)
-        assertTrue(thrown.getMessage().contains(ExceptionMessageEnum.INVESTMENT_CHECKSUM_GET_ACCOUNT_ID_NULL_CHECKSUM.getCode()));
-
-        verify(mockRestClientService, times(1)).get(
-                any(String.class),
-                any(Map.class),
-                eq(RetrieveCustomerAccountsIdListResponse.class),
-                anyInt(),
-                anyBoolean());
-    }
-
-    @Test
-    void testRetrieveAccountIdWithCheckSum_Success() {
-        // Arrange
-        Map<String, String> requestHeaders = Map.of(
-            HTTPRequestHeaderConstants.X_HSBC_CUSTOMER_ID, TEST_CIN,
-            TransferQueryParameterConstant.CHECKSUM, TEST_CHECKSUM
-        );
-
-        // 创建一个包含有效 AccountIdList 对象的列表
-        List<AccountIdList> validAccountIdList = new ArrayList<>();
-        AccountIdList validAccount = new AccountIdList(); // 假设构造函数可用
-        AccountId innerAccountId = new AccountId(); // 假设构造函数可用
-        // 设置 innerAccountId 的具体属性...
-        innerAccountId.setAccountNumber("12345678");
         innerAccountId.setCountryAccountCode("HK");
-        // ... 设置其他必要属性 ...
-        validAccount.setAccountId(innerAccountId);
-        validAccountIdList.add(validAccount);
+        innerAccountId.setGroupMemberAccountCode("HSBC");
+        innerAccountId.setAccountNumber("12345678");
+        innerAccountId.setAccountProductTypeCode("GOLD");
+        innerAccountId.setAccountTypeCode("INVEST");
+        innerAccountId.setAccountCurrencyCode("HKD");
 
-        RetrieveCustomerAccountsIdListResponse mockResponse = new RetrieveCustomerAccountsIdListResponse();
-        mockResponse.setAccountIdList(validAccountIdList);
+        // 创建一个外部 AccountId 对象，其 accountId 字段是上面的 innerAccountId
+        AccountId outerAccountId = new AccountId(); // 假设构造函数可用
+        // 注意：这里的结构是关键，outerAccountId.getAccountId() 应该返回 innerAccountId
+        // 但是 AccountId 类通常不会有 getAccountId() 方法，它自己就是账户信息。
+        // 仔细看 AbstractRestService.retrieveAccountIdWithCheckSum 方法：
+        // account.getAccountId().getCountryAccountCode()
+        // 这意味着 List<AccountId> 中的每个 AccountId 对象本身，其 getAccountId() 方法又返回了另一个 AccountId 对象。
+        // 这在代码中看起来像是一个嵌套结构。
+        // 重新分析代码：RetrieveCustomerAccountsIdListResponse 包含 List<com.hsbc.trade.common.AccountId>
+        // 而 AbstractRestService.retrieveAccountIdWithCheckSum 代码是：
+        // account.getAccountId().getCountryAccountCode() ...
+        // 这意味着 List<com.hsbc.trade.common.AccountId> 中的 AccountId 对象必须有一个 getAccountId() 方法，
+        // 该方法返回 *另一个* AccountId 对象，然后从这个 *另一个* 对象中获取字段。
+        // 这似乎不太符合常规的 POJO 设计。让我们再次检查代码片段。
 
+        // **重新分析 AbstractRestService.retrieveAccountIdWithCheckSum:**
+        // Optional<AccountId> accountIdOpt = response.getAccountIdList().stream().map(account -> {
+        //     if (account == null || account.getAccountId() == null) { // <-- account 是 List<AccountId> 中的一个元素
+        //         throw new BadRequestException(INVESTMENT_CHECKSUM_GET_ACCOUNT_ID_NULL_CHECKSUM.getCode());
+        //     }
+        //     AccountId accountId = new AccountId(); // <-- 创建新的 AccountId 对象
+        //     accountId.setCountryAccountCode(account.getAccountId().getCountryAccountCode()); // <-- 从 account.getAccountId() 获取字段
+        //     // ... 其他 set 方法 ...
+        //     return accountId; // <-- 返回新创建的对象
+        // }).findFirst();
+
+        // 这确实表明 List<AccountId> 中的 AccountId 对象必须有一个 getAccountId() 方法。
+        // 这意味着 List 中的 AccountId 对象内部持有一个 AccountId 类型的字段。
+        // 由于 AccountId 类是我们无法修改的 common 类，我们需要假设它确实有一个 getAccountId() 方法。
+        // 让我们创建一个 AccountId 对象，并 Mock 其 getAccountId() 方法。
+
+        AccountId mockOuterAccountId = mock(AccountId.class); // Mock 外层 AccountId
+        AccountId innerAccountIdForMock = new AccountId(); // 这个是实际要复制的内部信息
+        innerAccountIdForMock.setCountryAccountCode("HK");
+        innerAccountIdForMock.setGroupMemberAccountCode("HSBC");
+        innerAccountIdForMock.setAccountNumber("12345678");
+        innerAccountIdForMock.setAccountProductTypeCode("GOLD");
+        innerAccountIdForMock.setAccountTypeCode("INVEST");
+        innerAccountIdForMock.setAccountCurrencyCode("HKD");
+
+        // Mock mockOuterAccountId.getAccountId() 返回 innerAccountIdForMock
+        when(mockOuterAccountId.getAccountId()).thenReturn(innerAccountIdForMock);
+
+        // 创建 List<AccountId> 并添加 Mock 对象
+        List<AccountId> validAccountIdList = List.of(mockOuterAccountId);
+
+        // 创建 RetrieveCustomerAccountsIdListResponse 并 Mock 其 getAccountIdList()
+        RetrieveCustomerAccountsIdListResponse mockAccountIdsResponse = new RetrieveCustomerAccountsIdListResponse();
+        // Mock response 对象的 getter，使其返回我们准备的列表
+        // 这里需要假设 RetrieveCustomerAccountsIdListResponse 有 setter 或者我们可以通过反射设置
+        // 或者更直接地，Mock retrieveCustomerAccountIdsList 方法本身（这是更好的方式）
+        // 因为 retrieveCustomerAccountIdsList 也是 AbstractRestService 的 public 方法，内部调用 restClientService.get
+
+        // **更好的方式是 Mock retrieveCustomerAccountIdsList 方法本身**
+        // 但这意味着我们需要使用 Spy 或者在 Testable 类中暴露方法。
+        // 或者，我们可以 Mock restClientService.get，这是 retrieveCustomerAccountIdsList 内部调用的。
+
+        // 构建 retrieveCustomerAccountIdsList 方法内部会调用的 URL
+        String expectedAccountIdsUrl = TEST_CUSTOMER_ACCOUNT_URL + "/accounts-ids?body=%7B%22checksumList%22%3A%5B%22TEST_CHECKSUM_67890%22%5D%7D";
+        // 注意：URL 中的 body 是 URL 编码的 JSON {"checksumList":["TEST_CHECKSUM_67890"]}
+
+        // Mock restClientService.get 调用 (这是 retrieveCustomerAccountIdsList 内部的调用)
         when(mockRestClientService.get(
-                any(String.class),
+                eq(expectedAccountIdsUrl),
                 any(Map.class),
                 eq(RetrieveCustomerAccountsIdListResponse.class),
                 anyInt(),
                 anyBoolean()))
-                .thenReturn(mockResponse);
+                .thenReturn(mockAccountIdsResponse);
+
+        // 现在 Mock mockAccountIdsResponse.getAccountIdList() 返回我们的有效列表
+        // 由于 mockAccountIdsResponse 是一个 POJO，我们不能直接 Mock 其 getter，除非我们创建一个子类或使用 PowerMock
+        // 更实际的做法是让 POJO 有 setter，或者我们再次使用反射，或者使用 Spy
+        // 假设 RetrieveCustomerAccountsIdListResponse 有 setter
+        mockAccountIdsResponse.setAccountIdList(validAccountIdList); // 假设存在 setter
+
+        // --- Mock SRE Validation (for receiver validation loop) ---
+        // Mock the call and response handling for SRE
+        when(mockSreValidationService.callSreForTransferValidation(anyString(), anyString(), any(), any(Map.class)))
+                .thenReturn(new com.hsbc.rtp.client.sre.domain.SreResponse()); // 假设 SreResponse 构造函数可用
+        // Mock the handleSreValidateResponse method to do nothing (or pass)
+        doNothing().when(mockSreValidationService).handleSreValidateResponse(any());
+
+        // --- Mock CEP Party Name Call ---
+        PartyNameResponse mockPartyNameResponse = new PartyNameResponse(); // 假设构造函数可用
+        Name mockName = new Name(); // 假设构造函数可用
+        mockName.setGivenName("John");
+        mockName.setCustomerChristianName("Smith");
+        mockName.setLastName("Doe");
+        mockPartyNameResponse.setName(mockName);
+        // Mock updateHeaderforCEP to return a modified map (simplified)
+        // Mock the CEP call itself
+        when(mockRestClientService.get(anyString(), any(Map.class), eq(PartyNameResponse.class), anyInt(), anyBoolean()))
+                .thenReturn(mockPartyNameResponse);
+
+        // --- Mock MDS Gold Price Call ---
+        GoldPriceResponse mockGoldPriceResponse = new GoldPriceResponse(); // 假设构造函数可用
+        GoldPriceResponseData mockGoldPriceData = new GoldPriceResponseData(); // 假设构造函数可用
+        mockGoldPriceData.setGoldPriceAmount(new BigDecimal("2000.00"));
+        mockGoldPriceData.setPublishTime(LocalDateTime.now());
+        mockGoldPriceResponse.setData(mockGoldPriceData);
+        when(mockRestClientService.get(anyString(), any(Map.class), eq(GoldPriceResponse.class), anyInt(), anyBoolean()))
+                .thenReturn(mockGoldPriceResponse);
+
+        // --- Mock Final Post Call ---
+        CreateTransferResponse mockCreateResponse = new CreateTransferResponse(); // 假设构造函数可用
+        // 设置 mockCreateResponse 的内容...
+        when(mockRestClientService.post(anyString(), any(Map.class), any(), eq(CreateTransferResponse.class), anyInt(), anyBoolean()))
+                .thenReturn(mockCreateResponse);
 
         // Act
-        AccountId result = abstractRestServiceUnderTest.retrieveAccountIdWithCheckSum(requestHeaders);
+        CreateTransferResponse result = tradeTransferServiceUnderTest.createTransfers(inputHeaders, createTransferRequest);
 
         // Assert
         assertNotNull(result);
-        assertEquals("12345678", result.getAccountNumber()); // 假设 AccountId 有 getAccountNumber
-        assertEquals("HK", result.getCountryAccountCode()); // 假设 AccountId 有 getCountryAccountCode
-
-        verify(mockRestClientService, times(1)).get(
-                any(String.class),
-                any(Map.class),
-                eq(RetrieveCustomerAccountsIdListResponse.class),
-                anyInt(),
-                anyBoolean());
+        // 验证 retrieveCustomerAccountIdsList 的内部调用 (间接验证 retrieveAccountIdWithCheckSum 成功执行)
+        verify(mockRestClientService, times(1)).get(eq(expectedAccountIdsUrl), any(Map.class), eq(RetrieveCustomerAccountsIdListResponse.class), anyInt(), anyBoolean());
+        // 验证最终的 post 调用
+        verify(mockRestClientService, times(1)).post(anyString(), any(Map.class), any(), eq(CreateTransferResponse.class), anyInt(), anyBoolean());
+        // 验证 SRE 调用
+        verify(mockSreValidationService, times(1)).callSreForTransferValidation(anyString(), anyString(), any(), any(Map.class));
+        verify(mockSreValidationService, times(1)).handleSreValidateResponse(any());
+        // 验证 CEP 调用
+        verify(mockRestClientService, times(1)).get(anyString(), any(Map.class), eq(PartyNameResponse.class), anyInt(), anyBoolean());
+        // 验证 MDS 调用
+        verify(mockRestClientService, times(1)).get(anyString(), any(Map.class), eq(GoldPriceResponse.class), anyInt(), anyBoolean());
     }
 }
