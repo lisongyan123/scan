@@ -4,6 +4,28 @@
     private static final String MOCK_CEP_PARTY_CONTACT_URL = "http://mock-cep-party-contact";
     private static final String MOCK_MDS_GOLD_QUOTES_URL = "http://mock-mds-gold";
     private static final String MOCK_CUSTOMER_ACCOUNT_URL = "http://mock-customer-account";
+    @BeforeEach
+    void setUp() {
+        // Create the service instance
+        tradeTransferService = new TradeTransferServiceImpl(mockRestClientService, mockE2ETrustTokenUtil, mockDuplicateSubmitPreventionService, mockTradeLimitService);
+
+        // Inject the mocked RetrieveCustomerProfilesServiceImpl
+        ReflectionTestUtils.setField(tradeTransferService, "retrieveCustomerProfilesService", mockRetrieveCustomerProfilesService);
+
+        // Set the URL values using ReflectionTestUtils
+        ReflectionTestUtils.setField(tradeTransferService, "tradeOnlineUrl", MOCK_TRADE_ONLINE_URL);
+        ReflectionTestUtils.setField(tradeTransferService, "accountsMapUrl", MOCK_ACCOUNTS_MAP_URL);
+        ReflectionTestUtils.setField(tradeTransferService, "cepPartyNameUrl", MOCK_CEP_PARTY_NAME_URL);
+        ReflectionTestUtils.setField(tradeTransferService, "cepPartyContactUrl", MOCK_CEP_PARTY_CONTACT_URL);
+        ReflectionTestUtils.setField(tradeTransferService, "mdsGoldQuotesUrl", MOCK_MDS_GOLD_QUOTES_URL);
+        ReflectionTestUtils.setField(tradeTransferService, "customerAccountUrl", MOCK_CUSTOMER_ACCOUNT_URL);
+        ReflectionTestUtils.setField(tradeTransferService, "timeout", 10000); // Example timeout
+        ReflectionTestUtils.setField(tradeTransferService, "printMessageLog", true); // Example log flag
+
+        baseRequestHeaders = new HashMap<>();
+        baseRequestHeaders.put(HTTPRequestHeaderConstants.X_HSBC_CUSTOMER_ID, "testCIN123");
+        baseRequestHeaders.put(HTTPRequestHeaderConstants.X_HSBC_USER_ID, "testUser");
+    }
 
 @Test
     void testRetrieveTransferDetail_Success_WithCustomerName() {
