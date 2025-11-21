@@ -1,42 +1,22 @@
-    private static final String MOCK_TRADE_ONLINE_URL = "http://mock-trade-online";
-    private static final String MOCK_ACCOUNTS_MAP_URL = "http://mock-accounts-map";
-    private static final String MOCK_CEP_PARTY_NAME_URL = "http://mock-cep-party-name";
-    private static final String MOCK_CEP_PARTY_CONTACT_URL = "http://mock-cep-party-contact";
-    private static final String MOCK_MDS_GOLD_QUOTES_URL = "http://mock-mds-gold";
-    private static final String MOCK_CUSTOMER_ACCOUNT_URL = "http://mock-customer-account";
-    @BeforeEach
-    void setUp() {
-        // Create the service instance
-        tradeTransferService = new TradeTransferServiceImpl(mockRestClientService, mockE2ETrustTokenUtil, mockDuplicateSubmitPreventionService, mockTradeLimitService);
-
-        // Inject the mocked RetrieveCustomerProfilesServiceImpl
-        ReflectionTestUtils.setField(tradeTransferService, "retrieveCustomerProfilesService", mockRetrieveCustomerProfilesService);
-
-        // Set the URL values using ReflectionTestUtils
-        ReflectionTestUtils.setField(tradeTransferService, "tradeOnlineUrl", MOCK_TRADE_ONLINE_URL);
-        ReflectionTestUtils.setField(tradeTransferService, "accountsMapUrl", MOCK_ACCOUNTS_MAP_URL);
-        ReflectionTestUtils.setField(tradeTransferService, "cepPartyNameUrl", MOCK_CEP_PARTY_NAME_URL);
-        ReflectionTestUtils.setField(tradeTransferService, "cepPartyContactUrl", MOCK_CEP_PARTY_CONTACT_URL);
-        ReflectionTestUtils.setField(tradeTransferService, "mdsGoldQuotesUrl", MOCK_MDS_GOLD_QUOTES_URL);
-        ReflectionTestUtils.setField(tradeTransferService, "customerAccountUrl", MOCK_CUSTOMER_ACCOUNT_URL);
-        ReflectionTestUtils.setField(tradeTransferService, "timeout", 10000); // Example timeout
-        ReflectionTestUtils.setField(tradeTransferService, "printMessageLog", true); // Example log flag
-
-        baseRequestHeaders = new HashMap<>();
-        baseRequestHeaders.put(HTTPRequestHeaderConstants.X_HSBC_CUSTOMER_ID, "testCIN123");
-        baseRequestHeaders.put(HTTPRequestHeaderConstants.X_HSBC_USER_ID, "testUser");
-    }
-
-@Test
+    // Test for retrieveTransferDetail - Success Path (PartyNameResponse is not null, getName() is not null, PartyContactResponse is not null, getContact() is not null)
+    @Test
     void testRetrieveTransferDetail_Success_WithCustomerName() {
         // Arrange
         String transferReferenceNumber = "ref123";
         String customerInternalNumber = "testCIN123"; // Extracted from baseRequestHeaders
+        Map<String, String> requestHeadersWithCIN = new HashMap<>(baseRequestHeaders);
+        requestHeadersWithCIN.put(HTTPRequestHeaderConstants.X_HSBC_CUSTOMER_ID, customerInternalNumber);
 
         // 1. Mock: retrieveTransferDetail Response
         RetrieveTransferDetailResponse mockResponse = new RetrieveTransferDetailResponse();
         RetrieveTransferDetailResponseData responseData = new RetrieveTransferDetailResponseData();
-        responseData.setInvestmentAccount(new AccountId()); // Ensure investmentAccount is not null for later processing
+        // Ensure investmentAccount is not null for later processing (findAccountChecksumForAccountNumber)
+        // This requires the InvestmentAccountId to be of the type used in RetrieveTransferDetailResponseData
+        // which seems to be com.hsbc.trade.common.AccountId based on the service code.
+        // Let's create one.
+        AccountId investmentAccountDetail = new AccountId();
+        investmentAccountDetail.setAccountNumber("987654321"); // Match this with the account in customerAccounts mock below
+        responseData.setInvestmentAccount(investmentAccountDetail);
         mockResponse.setData(responseData);
 
         // 2. Mock: CustomerAccounts for extractAccountIdMap (must be valid to pass the check)
@@ -44,10 +24,11 @@
         List<InvestmentAccount> accList = new ArrayList<>();
         InvestmentAccount acc1 = new InvestmentAccount();
         acc1.setChecksum("chk123");
-        com.hsbc.trade.transfer.domain.InvestmentAccountId rawAccId1 = new com.hsbc.trade.transfer.domain.InvestmentAccountId(); // Correct raw type from domain
+        // Use the InvestmentAccountId type from the domain.account package as per extractAccountIdMap
+        com.hsbc.trade.transfer.domain.InvestmentAccountId rawAccId1 = new com.hsbc.transfer.domain.InvestmentAccountId();
         rawAccId1.setCountryAccountCode("HK");
         rawAccId1.setGroupMemberAccountCode("HSBC");
-        rawAccId1.setAccountNumber("987654321");
+        rawAccId1.setAccountNumber("987654321"); // This number matches the one in investmentAccountDetail above
         rawAccId1.setAccountProductTypeCode("GOLD");
         rawAccId1.setAccountTypeCode("PHYS");
         rawAccId1.setAccountCurrencyCode("HKD");
@@ -69,10 +50,11 @@
         mockContact.setMobileNumber1("123456789");
         mockPartyContactResponse.setContact(mockContact); // getContact() will return this non-null object
 
-        // --- CRITICAL: Mock the specific restClientService.get calls with exact URLs ---
+        // --- CRITICAL: Mock the specific restClientService.get calls with exact URLs (after CIN replacement) ---
         // 1. Call for retrieveTransferDetail itself
+        String expectedDetailUrl = MOCK_TRADE_ONLINE_URL + "/transfers/{transferReferenceNumber}?customerInternalNumber=" + customerInternalNumber + "&sParameterType=SENS";
         when(mockRestClientService.get(
-                eq(MOCK_TRADE_ONLINE_URL + "/transfers/{transferReferenceNumber}?customerInternalNumber=" + customerInternalNumber + "&sParameterType=SENS"), // This is how UriComponentsBuilder builds it with the number
+                eq(expectedDetailUrl), // URL with placeholder, but UriComponentsBuilder.build(value) fills it
                 anyMap(), // request headers rebuilt
                 eq(RetrieveTransferDetailResponse.class),
                 anyInt(), // timeout
@@ -80,8 +62,9 @@
         )).thenReturn(mockResponse);
 
         // 2. Call for retrieveCustomerAccounts (inside retrieveTransferDetail)
+        String expectedAccountsUrl = MOCK_ACCOUNTS_MAP_URL + "accounts-map?consumerId=DAC";
         when(mockRestClientService.get(
-                eq(MOCK_ACCOUNTS_MAP_URL + "accounts-map?consumerId=DAC"), // Built URI string
+                eq(expectedAccountsUrl),
                 anyMap(), // request headers rebuilt
                 eq(CustomerAccounts.class),
                 anyInt(), // timeout
@@ -115,24 +98,21 @@
         // Mock E2E token generation for updateHeaderforCEP calls (used by addCustomerNameToUri and addCustomerContactToUri)
         when(mockE2ETrustTokenUtil.getE2ETrustToken()).thenReturn("mock-e2e-token");
 
-        // Mock retrieveCustomerProfilesService.getCIN if needed by buildRequestHeaders (though CIN is already in baseRequestHeaders)
-        // when(mockRetrieveCustomerProfilesService.getCIN(anyMap())).thenReturn("fallback-cin"); // Not needed if CIN is in baseRequestHeaders
-
         // Act
-        RetrieveTransferDetailResponse result = tradeTransferService.retrieveTransferDetail(baseRequestHeaders, transferReferenceNumber);
+        RetrieveTransferDetailResponse result = tradeTransferService.retrieveTransferDetail(requestHeadersWithCIN, transferReferenceNumber);
 
         // Assert
         assertNotNull(result);
         // Verify the specific interactions happened
         verify(mockRestClientService, times(1)).get(
-                eq(MOCK_TRADE_ONLINE_URL + "/transfers/{transferReferenceNumber}?customerInternalNumber=" + customerInternalNumber + "&sParameterType=SENS"),
+                eq(expectedDetailUrl),
                 anyMap(),
                 eq(RetrieveTransferDetailResponse.class),
                 anyInt(),
                 anyBoolean()
         );
         verify(mockRestClientService, times(1)).get(
-                eq(MOCK_ACCOUNTS_MAP_URL + "accounts-map?consumerId=DAC"),
+                eq(expectedAccountsUrl),
                 anyMap(),
                 eq(CustomerAccounts.class),
                 anyInt(),
