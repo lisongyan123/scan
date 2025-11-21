@@ -5,19 +5,14 @@ import static org.mockito.ArgumentMatchers.anyBoolean;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.*;
 
+import com.hsbc.rtp.client.sre.domain.SreRequest;
+import com.hsbc.rtp.client.sre.domain.SreData;
 import com.hsbc.trade.HTTPRequestHeaderConstants;
-import com.hsbc.trade.common.AccountId;
 import com.hsbc.trade.service.RestClientService;
-import com.hsbc.trade.transfer.constant.TransferQueryParameterConstant;
-import com.hsbc.trade.transfer.domain.RetrieveCustomerAccountsIdListResponse;
-import com.hsbc.trade.transfer.domain.account.CustomerAccounts;
-import com.hsbc.trade.transfer.domain.account.InvestmentAccount;
-import com.hsbc.trade.transfer.domain.mds.GoldPriceResponse;
-import com.hsbc.trade.transfer.domain.mds.GoldPriceResponseData;
-import com.hsbc.trade.transfer.domain.cep.PartyContactResponse;
-import com.hsbc.trade.transfer.domain.cep.PartyNameResponse;
-import com.hsbc.trade.transfer.domain.cep.Name;
-import com.hsbc.trade.transfer.domain.cep.Contact;
+import com.hsbc.trade.transfer.domain.eligibility.RuleResponse;
+import com.hsbc.trade.transfer.domain.eligibility.RuleResponseDTO;
+import com.hsbc.trade.transfer.enums.ExceptionMessageEnum;
+import com.hsbc.trade.transfer.service.impl.SreValidationServiceImpl;
 import com.hsbc.trade.utils.E2ETrustTokenUtil;
 import com.hsbc.trade.service.DuplicateSubmitPreventionService;
 import com.hsbc.trade.service.impl.RetrieveCustomerProfilesServiceImpl;
@@ -28,18 +23,12 @@ import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 
-import jakarta.ws.rs.BadRequestException;
 import jakarta.ws.rs.InternalServerErrorException;
-import java.math.BigDecimal;
-import java.time.LocalDateTime;
-import java.util.*;
+import java.util.Collections;
+import java.util.Map;
 
-// 假设这个类是 AbstractRestService 的具体实现以便测试，或者使用反射/匿名类实例化
-// 这里我们假设有一个 TestableAbstractRestService 类来实例化和测试
-// 如果没有具体实现，可以考虑使用 PowerMock 或反射来处理 final/method 依赖注入问题
-// 为了演示，这里创建一个内部类来测试抽象方法
 @ExtendWith(MockitoExtension.class)
-class AbstractRestServiceTest {
+class SreValidationServiceImplTest {
 
     @Mock
     private RestClientService mockRestClientService;
@@ -53,248 +42,122 @@ class AbstractRestServiceTest {
     @Mock
     private RetrieveCustomerProfilesServiceImpl mockRetrieveCustomerProfilesService;
 
-    private TestableAbstractRestService abstractRestServiceUnderTest; // 需要一个具体实现或测试辅助类
+    private SreValidationServiceImpl sreValidationServiceUnderTest;
 
-    private final String TEST_CIN = "TEST_CIN_12345";
-    private final String TEST_CHECKSUM = "TEST_CHECKSUM_67890";
-
-    // 一个用于测试的内部类，继承 AbstractRestService
-    static class TestableAbstractRestService extends AbstractRestService {
-        // 在测试类中设置依赖
-        public void setRestClientService(RestClientService restClientService) {
-            this.restClientService = restClientService;
-        }
-
-        public void setE2ETrustTokenUtil(E2ETrustTokenUtil e2ETrustTokenUtil) {
-            this.e2ETrustTokenUtil = e2ETrustTokenUtil;
-        }
-
-        public void setDuplicateSubmitPreventionService(DuplicateSubmitPreventionService duplicateSubmitPreventionService) {
-            this.duplicateSubmitPreventionService = duplicateSubmitPreventionService;
-        }
-
-         public void setRetrieveCustomerProfilesService(RetrieveCustomerProfilesServiceImpl retrieveCustomerProfilesService) {
-            this.retrieveCustomerProfilesService = retrieveCustomerProfilesService;
-        }
-
-        // 简单构造函数，或者通过 setter 注入
-        public TestableAbstractRestService() {
-             // 设置默认值，这些值会在测试中被 Mock 覆盖
-        }
-    }
+    private final String TEST_RULE = "test_rule_name";
+    private final String TEST_SENDER_CIN = "SENDER_CIN_123";
+    private final String TEST_RECEIVER_CIN = "RECEIVER_CIN_456";
+    private final String TEST_SRE_URL = "http://test-sre-service";
 
     @BeforeEach
     void setUp() {
-        abstractRestServiceUnderTest = new TestableAbstractRestService();
-        abstractRestServiceUnderTest.setRestClientService(mockRestClientService);
-        abstractRestServiceUnderTest.setE2ETrustTokenUtil(mockE2ETrustTokenUtil);
-        abstractRestServiceUnderTest.setDuplicateSubmitPreventionService(mockDuplicateSubmitPreventionService);
-        abstractRestServiceUnderTest.setRetrieveCustomerProfilesService(mockRetrieveCustomerProfilesService);
+        sreValidationServiceUnderTest = new SreValidationServiceImpl();
+        // 注入 Mock 的依赖项
+        sreValidationServiceUnderTest.restClientService = mockRestClientService;
+        sreValidationServiceUnderTest.e2ETrustTokenUtil = mockE2ETrustTokenUtil;
+        sreValidationServiceUnderTest.duplicateSubmitPreventionService = mockDuplicateSubmitPreventionService;
+        sreValidationServiceUnderTest.retrieveCustomerProfilesService = mockRetrieveCustomerProfilesService;
 
-        // 设置一些默认 URL 值，防止空指针
-        abstractRestServiceUnderTest.tradeOnlineUrl = "http://test-trade-online";
-        abstractRestServiceUnderTest.accountsMapUrl = "http://test-accounts-map";
-        abstractRestServiceUnderTest.cepPartyNameUrl = "http://test-cep-party-name";
-        abstractRestServiceUnderTest.cepPartyContactUrl = "http://test-cep-party-contact";
-        abstractRestServiceUnderTest.mdsGoldQuotesUrl = "http://test-mds-gold";
-        abstractRestServiceUnderTest.customerAccountUrl = "http://test-customer-account";
+        // 设置 SRE 服务的 URL (这通常通过 @Value 注解注入，在测试中需要手动设置)
+        sreValidationServiceUnderTest.sreUrl = TEST_SRE_URL;
+        // 可选：设置 targetSystemEnvironmentId，如果需要的话
+        // sreValidationServiceUnderTest.targetSystemEnvironmentId = "TEST_ENV";
     }
 
     @Test
-    void testRetrieveCustomerAccounts_Success() {
+    void testCallSreForTransferValidation_Success() {
         // Arrange
-        Map<String, String> requestHeaders = new HashMap<>();
-        requestHeaders.put(HTTPRequestHeaderConstants.X_HSBC_CUSTOMER_ID, TEST_CIN);
+        Map<String, String> inputHeaders = Map.of(
+            HTTPRequestHeaderConstants.X_HSBC_CUSTOMER_ID, "INPUT_CIN"
+            // ... 其他可能的输入头 ...
+        );
+        Map<String, String> expectedHeaders = inputHeaders; // 如果 targetSystemEnvironmentId 为空，则 header 不变
+        // 如果设置了 targetSystemEnvironmentId，expectedHeaders 应该包含该值
+        // Map<String, String> expectedHeaders = new HashMap<>(inputHeaders);
+        // expectedHeaders.put(HTTPRequestHeaderConstants.X_HSBC_Target_System_Environment_Id, "TEST_ENV");
 
-        CustomerAccounts mockResponse = new CustomerAccounts(); // 假设构造函数或 setter 可用
-        List<InvestmentAccount> accountList = new ArrayList<>();
-        // 添加一些模拟账户数据...
-        InvestmentAccount mockAccount = new InvestmentAccount();
-        // ... 设置 mockAccount 属性 ...
-        accountList.add(mockAccount);
-        mockResponse.setInvestmentAccountList(accountList);
+        RuleResponse mockResponse = new RuleResponse(); // 假设构造函数可用
+        RuleResponseDTO mockResult = new RuleResponseDTO(); // 假设构造函数可用
+        // 设置 mockResponse 的内容，例如 mockResult.setReasonCodes(Collections.emptyList());
+        mockResponse.setResults(mockResult);
 
-        when(mockRestClientService.get(any(String.class), any(Map.class), eq(CustomerAccounts.class), anyInt(), anyBoolean()))
+        // Mock RestClientService.post 方法
+        when(mockRestClientService.post(
+                eq(TEST_SRE_URL),
+                any(Map.class), // 验证时可以更具体，如 eq(expectedHeaders)
+                any(SreRequest.class), // 验证时可以检查 SreRequest 对象的内容
+                eq(RuleResponse.class),
+                anyInt(),
+                anyBoolean()))
                 .thenReturn(mockResponse);
 
         // Act
-        CustomerAccounts result = abstractRestServiceUnderTest.retrieveCustomerAccounts(requestHeaders);
+        RuleResponse result = sreValidationServiceUnderTest.callSreForTransferValidation(
+                TEST_RULE, TEST_SENDER_CIN, TEST_RECEIVER_CIN, inputHeaders);
 
         // Assert
         assertNotNull(result);
-        assertEquals(accountList, result.getInvestmentAccountList());
-        verify(mockRestClientService, times(1)).get(any(String.class), any(Map.class), eq(CustomerAccounts.class), anyInt(), anyBoolean());
+        assertEquals(mockResult, result.getResults()); // 验证返回的是我们 Mock 的对象
+        // 验证 restClientService.post 被调用了一次
+        verify(mockRestClientService, times(1)).post(
+                eq(TEST_SRE_URL),
+                any(Map.class),
+                any(SreRequest.class),
+                eq(RuleResponse.class),
+                anyInt(),
+                anyBoolean());
+
+        // (可选) 验证 SreRequest 的内容是否正确构建
+        // verify(mockRestClientService).post(
+        //         eq(TEST_SRE_URL),
+        //         any(Map.class),
+        //         argThat(request -> {
+        //             SreData data = request.getData();
+        //             return TEST_RULE.equals(request.getRule()) &&
+        //                    "N".equals(data.getCustomerIdType()) &&
+        //                    TEST_SENDER_CIN.equals(data.getCustomerIdNumber()) &&
+        //                    "N".equals(data.getReceiverCustomerIdType()) &&
+        //                    TEST_RECEIVER_CIN.equals(data.getReceiverCustomerIdNumber()) &&
+        //                    "I".equals(data.getInputChannel());
+        //         }),
+        //         eq(RuleResponse.class),
+        //         anyInt(),
+        //         anyBoolean());
     }
 
     @Test
-    void testRetrieveCustomerNamesWithCinNumber_Success() {
+    void testCallSreForTransferValidation_ServiceError_ThrowsException() {
         // Arrange
-        String cinNumber = TEST_CIN;
-        Map<String, String> requestHeaders = new HashMap<>();
-        requestHeaders.put(HTTPRequestHeaderConstants.X_HSBC_CUSTOMER_ID, cinNumber);
+        Map<String, String> inputHeaders = Map.of(
+            HTTPRequestHeaderConstants.X_HSBC_CUSTOMER_ID, "INPUT_CIN"
+        );
 
-        Name mockName = new Name(); // 假设 Name 类有 setter
-        mockName.setGivenName("John");
-        mockName.setLastName("Doe");
-        PartyNameResponse mockResponse = new PartyNameResponse();
-        mockResponse.setName(mockName);
-
-        when(mockRestClientService.get(any(String.class), any(Map.class), eq(PartyNameResponse.class), anyInt(), anyBoolean()))
-                .thenReturn(mockResponse);
-
-        // Act
-        PartyNameResponse result = abstractRestServiceUnderTest.retrieveCustomerNamesWithCinNumber(cinNumber, requestHeaders);
-
-        // Assert
-        assertNotNull(result);
-        assertNotNull(result.getName());
-        assertEquals("John", result.getName().getGivenName());
-        assertEquals("Doe", result.getName().getLastName());
-        verify(mockRestClientService, times(1)).get(any(String.class), any(Map.class), eq(PartyNameResponse.class), anyInt(), anyBoolean());
-    }
-
-    @Test
-    void testRetrieveCustomerPhoneNumberWithCinNumber_Success() {
-        // Arrange
-        String cinNumber = TEST_CIN;
-        Map<String, String> requestHeaders = new HashMap<>();
-        requestHeaders.put(HTTPRequestHeaderConstants.X_HSBC_CUSTOMER_ID, cinNumber);
-
-        Contact mockContact = new Contact(); // 假设 Contact 类有 setter
-        mockContact.setMobileNumber1("123456789");
-        PartyContactResponse mockResponse = new PartyContactResponse();
-        mockResponse.setContact(mockContact);
-
-        when(mockRestClientService.get(any(String.class), any(Map.class), eq(PartyContactResponse.class), anyInt(), anyBoolean()))
-                .thenReturn(mockResponse);
-
-        // Act
-        PartyContactResponse result = abstractRestServiceUnderTest.retrieveCustomerPhoneNumberWithCinNumber(cinNumber, requestHeaders);
-
-        // Assert
-        assertNotNull(result);
-        assertNotNull(result.getContact());
-        assertEquals("123456789", result.getContact().getMobileNumber1());
-        verify(mockRestClientService, times(1)).get(any(String.class), any(Map.class), eq(PartyContactResponse.class), anyInt(), anyBoolean());
-    }
-
-    @Test
-    void testRetrieveGoldPrice_Success() {
-        // Arrange
-        Map<String, String> requestHeaders = new HashMap<>();
-        requestHeaders.put(HTTPRequestHeaderConstants.X_HSBC_CUSTOMER_ID, TEST_CIN);
-
-        GoldPriceResponseData mockData = new GoldPriceResponseData(); // 假设 setter 可用
-        mockData.setGoldPriceAmount(new BigDecimal("2000.00"));
-        mockData.setPublishTime(LocalDateTime.now());
-        GoldPriceResponse mockResponse = new GoldPriceResponse();
-        mockResponse.setData(mockData);
-
-        when(mockRestClientService.get(any(String.class), any(Map.class), eq(GoldPriceResponse.class), anyInt(), anyBoolean()))
-                .thenReturn(mockResponse);
-
-        // Act
-        GoldPriceResponse result = abstractRestServiceUnderTest.retrieveGoldPrice(requestHeaders);
-
-        // Assert
-        assertNotNull(result);
-        assertNotNull(result.getData());
-        assertEquals(new BigDecimal("2000.00"), result.getData().getGoldPriceAmount());
-        verify(mockRestClientService, times(1)).get(any(String.class), any(Map.class), eq(GoldPriceResponse.class), anyInt(), anyBoolean());
-    }
-
-    @Test
-    void testRetrieveCustomerAccountIdsList_Success() {
-         // Arrange
-        Map<String, String> requestHeaders = new HashMap<>();
-        requestHeaders.put(HTTPRequestHeaderConstants.X_HSBC_CUSTOMER_ID, TEST_CIN);
-        requestHeaders.put(TransferQueryParameterConstant.CHECKSUM, TEST_CHECKSUM);
-
-        RetrieveCustomerAccountsIdListResponse mockResponse = new RetrieveCustomerAccountsIdListResponse(); // 假设构造或 setter
-        List<com.hsbc.trade.transfer.domain.account.AccountId> accountIdList = new ArrayList<>();
-        com.hsbc.trade.transfer.domain.account.AccountId mockAccountId = new com.hsbc.trade.transfer.domain.account.AccountId();
-        // ... 设置 mockAccountId 属性 ...
-        accountIdList.add(mockAccountId);
-        mockResponse.setAccountIdList(accountIdList);
-
-        when(mockRestClientService.get(any(String.class), any(Map.class), eq(RetrieveCustomerAccountsIdListResponse.class), anyInt(), anyBoolean()))
-                .thenReturn(mockResponse);
-
-        // Act
-        RetrieveCustomerAccountsIdListResponse result = abstractRestServiceUnderTest.retrieveCustomerAccountIdsList(requestHeaders);
-
-        // Assert
-        assertNotNull(result);
-        assertNotNull(result.getAccountIdList());
-        assertEquals(accountIdList, result.getAccountIdList());
-        verify(mockRestClientService, times(1)).get(any(String.class), any(Map.class), eq(RetrieveCustomerAccountsIdListResponse.class), anyInt(), anyBoolean());
-    }
-
-    @Test
-    void testRetrieveAccountIdWithCheckSum_Success() {
-        // Arrange
-        Map<String, String> requestHeaders = new HashMap<>();
-        requestHeaders.put(HTTPRequestHeaderConstants.X_HSBC_CUSTOMER_ID, TEST_CIN);
-        requestHeaders.put(TransferQueryParameterConstant.CHECKSUM, TEST_CHECKSUM);
-
-        // Mock the call to retrieveCustomerAccountIdsList
-        RetrieveCustomerAccountsIdListResponse mockListResponse = new RetrieveCustomerAccountsIdListResponse();
-        List<com.hsbc.trade.transfer.domain.account.AccountId> accountIdList = new ArrayList<>();
-        com.hsbc.trade.transfer.domain.account.AccountId mockSourceAccountId = new com.hsbc.trade.transfer.domain.account.AccountId();
-        // ... 设置 mockSourceAccountId 属性 ...
-        mockSourceAccountId.setAccountNumber("12345678"); // Example
-        accountIdList.add(mockSourceAccountId);
-        mockListResponse.setAccountIdList(accountIdList);
-
-        when(mockRestClientService.get(any(String.class), any(Map.class), eq(RetrieveCustomerAccountsIdListResponse.class), anyInt(), anyBoolean()))
-                .thenReturn(mockListResponse);
-
-        // Act
-        AccountId result = abstractRestServiceUnderTest.retrieveAccountIdWithCheckSum(requestHeaders);
-
-        // Assert
-        assertNotNull(result);
-        assertEquals("12345678", result.getAccountNumber()); // Example assertion based on mock data
-        verify(mockRestClientService, times(1)).get(any(String.class), any(Map.class), eq(RetrieveCustomerAccountsIdListResponse.class), anyInt(), anyBoolean());
-    }
-
-    @Test
-    void testRetrieveAccountIdWithCheckSum_EmptyList_ThrowsException() {
-        // Arrange
-        Map<String, String> requestHeaders = new HashMap<>();
-        requestHeaders.put(HTTPRequestHeaderConstants.X_HSBC_CUSTOMER_ID, TEST_CIN);
-        requestHeaders.put(TransferQueryParameterConstant.CHECKSUM, TEST_CHECKSUM);
-
-        RetrieveCustomerAccountsIdListResponse mockListResponse = new RetrieveCustomerAccountsIdListResponse();
-        // accountIdList is null or empty
-        mockListResponse.setAccountIdList(null); // or Collections.emptyList()
-
-        when(mockRestClientService.get(any(String.class), any(Map.class), eq(RetrieveCustomerAccountsIdListResponse.class), anyInt(), anyBoolean()))
-                .thenReturn(mockListResponse);
+        // Mock RestClientService.post 方法抛出异常
+        when(mockRestClientService.post(
+                eq(TEST_SRE_URL),
+                any(Map.class),
+                any(SreRequest.class),
+                eq(RuleResponse.class),
+                anyInt(),
+                anyBoolean()))
+                .thenThrow(new RuntimeException("SRE Service Unavailable"));
 
         // Act & Assert
-        assertThrows(BadRequestException.class, () -> {
-            abstractRestServiceUnderTest.retrieveAccountIdWithCheckSum(requestHeaders);
+        InternalServerErrorException thrown = assertThrows(InternalServerErrorException.class, () -> {
+            sreValidationServiceUnderTest.callSreForTransferValidation(
+                    TEST_RULE, TEST_SENDER_CIN, TEST_RECEIVER_CIN, inputHeaders);
         });
-        verify(mockRestClientService, times(1)).get(any(String.class), any(Map.class), eq(RetrieveCustomerAccountsIdListResponse.class), anyInt(), anyBoolean());
+
+        // 验证抛出的异常消息是否为预期的错误码
+        assertTrue(thrown.getMessage().contains(ExceptionMessageEnum.SRE_CHECK_ERROR.getCode()));
+
+        // 验证 restClientService.post 被调用了一次
+        verify(mockRestClientService, times(1)).post(
+                eq(TEST_SRE_URL),
+                any(Map.class),
+                any(SreRequest.class),
+                eq(RuleResponse.class),
+                anyInt(),
+                anyBoolean());
     }
-
-    @Test
-    void testRetrieveCustomerNamesWithCinNumber_ServiceError_ThrowsException() {
-        // Arrange
-        String cinNumber = TEST_CIN;
-        Map<String, String> requestHeaders = new HashMap<>();
-        requestHeaders.put(HTTPRequestHeaderConstants.X_HSBC_CUSTOMER_ID, cinNumber);
-
-        when(mockRestClientService.get(any(String.class), any(Map.class), eq(PartyNameResponse.class), anyInt(), anyBoolean()))
-                .thenThrow(new RuntimeException("Service Error"));
-
-        // Act & Assert
-        assertThrows(InternalServerErrorException.class, () -> {
-            abstractRestServiceUnderTest.retrieveCustomerNamesWithCinNumber(cinNumber, requestHeaders);
-        });
-        verify(mockRestClientService, times(1)).get(any(String.class), any(Map.class), eq(PartyNameResponse.class), anyInt(), anyBoolean());
-    }
-
-    // 类似地，可以为 retrieveCustomerPhoneNumberWithCinNumber 和 retrieveGoldPrice 添加错误测试用例
 }
