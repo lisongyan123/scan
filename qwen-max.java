@@ -1,84 +1,128 @@
-
-    // Test for retrieveTransferDetail - Success Path (PartyNameResponse.getName() != null)
     @Test
     void testRetrieveTransferDetail_Success_WithCustomerName() {
         // Arrange
         String transferReferenceNumber = "ref123";
+        String customerInternalNumber = "testCIN123"; // Extracted from baseRequestHeaders
+
+        // 1. Mock: retrieveTransferDetail Response
         RetrieveTransferDetailResponse mockResponse = new RetrieveTransferDetailResponse();
         RetrieveTransferDetailResponseData responseData = new RetrieveTransferDetailResponseData();
-        // ... set fields on responseData ...
-        // Mock CustomerAccounts for checksum mapping
+        responseData.setInvestmentAccount(new AccountId()); // Ensure investmentAccount is not null for later processing
+        mockResponse.setData(responseData);
+
+        // 2. Mock: CustomerAccounts for extractAccountIdMap (must be valid to pass the check)
         CustomerAccounts mockCustomerAccounts = new CustomerAccounts();
         List<InvestmentAccount> accList = new ArrayList<>();
-        InvestmentAccount acc = new InvestmentAccount();
-        acc.setChecksum("chk123");
-        AccountId accId = new AccountId();
-        accId.setAccountNumber("987654321");
-        acc.setInvestmentAccountId(accId);
-        accList.add(acc);
-        mockCustomerAccounts.setInvestmentAccountList(accList);
+        InvestmentAccount acc1 = new InvestmentAccount();
+        acc1.setChecksum("chk123");
+        com.hsbc.trade.transfer.domain.InvestmentAccountId rawAccId1 = new com.hsbc.trade.transfer.domain.InvestmentAccountId(); // Correct raw type from domain
+        rawAccId1.setCountryAccountCode("HK");
+        rawAccId1.setGroupMemberAccountCode("HSBC");
+        rawAccId1.setAccountNumber("987654321");
+        rawAccId1.setAccountProductTypeCode("GOLD");
+        rawAccId1.setAccountTypeCode("PHYS");
+        rawAccId1.setAccountCurrencyCode("HKD");
+        acc1.setInvestmentAccountId(rawAccId1);
+        accList.add(acc1);
+        mockCustomerAccounts.setInvestmentAccountList(accList); // Now the list is not empty and contains valid objects
 
-        // Mock PartyNameResponse with Name object
+        // 3. Mock: PartyNameResponse for addCustomerNameToUri (getName() != null path)
         PartyNameResponse mockPartyNameResponse = new PartyNameResponse();
-        Name mockName = new Name(); // Assuming Name class is available
+        PartyName mockName = new PartyName(); // Assuming PartyName class is available
         mockName.setLastName("Doe");
         mockName.setGivenName("John");
         mockName.setCustomerChristianName("Smith");
         mockPartyNameResponse.setName(mockName); // getName() will return this non-null object
 
-        // Mock PartyContactResponse
+        // 4. Mock: PartyContactResponse for addCustomerContactToUri (getContact() != null path)
         PartyContactResponse mockPartyContactResponse = new PartyContactResponse();
-        // ... set fields ...
+        PartyContact mockContact = new PartyContact(); // Assuming PartyContact class is available
+        mockContact.setMobileNumber1("123456789");
+        mockPartyContactResponse.setContact(mockContact); // getContact() will return this non-null object
 
-        when(mockRestClientService.get(anyString(), anyMap(), eq(RetrieveTransferDetailResponse.class), anyInt(), anyBoolean()))
-                .thenReturn(mockResponse);
-        when(mockRestClientService.get(anyString(), anyMap(), eq(CustomerAccounts.class), anyInt(), anyBoolean()))
-                .thenReturn(mockCustomerAccounts);
-        // Mock the call to retrieveCustomerNamesWithCinNumber to return the response with Name
-        when(mockRestClientService.get(anyString(), anyMap(), eq(PartyNameResponse.class), anyInt(), anyBoolean()))
-             .thenReturn(mockPartyNameResponse) // First call for name
-             .thenReturn(mockPartyContactResponse); // Second call for contact (if needed, adjust if contact is mocked differently)
-        // Mock retrieveCustomerPhoneNumberWithCinNumber if needed, or adjust the 'anyString' matchers above carefully
-        // For simplicity, assuming the contact call also uses get with appropriate parameters and returns mockPartyContactResponse
-        // A more precise mock would use specific URL matchers, but this often works for basic tests if the order is predictable.
-        // If order is not predictable or URLs are different, separate when() calls for each specific URL are needed.
-        // Let's refine it slightly by matching the specific URL patterns if possible, or assume the first two 'get' calls are name and contact.
-        // The retrieveCustomerNamesWithCinNumber uses cepPartyNameUrl
-        // The retrieveCustomerPhoneNumberWithCinNumber uses cepPartyContactUrl
-        // To mock them precisely, we need to know the exact URLs from the @Value annotations in AbstractRestService.
-        // For now, let's assume the mocking above covers the calls within the method flow.
-        // The crucial part is mocking the name call.
-        // We'll mock the name call specifically by matching the cepPartyNameUrl if available as a constant or inject it.
-        // Since we don't have access to the URL constants here, the broad 'anyString' is used, but be aware it catches *all* get calls.
-        // A better approach is to inject the URLs or use specific matchers if the URLs are known/testable.
-        // For this test, the key is that retrieveCustomerNamesWithCinNumber returns a response with a Name object.
-        // So, let's refine the mocking to be slightly more specific if possible.
-        // We can't directly mock retrieveCustomerNamesWithCinNumber because it's a method in the *parent* class
-        // that uses restClientService. We must mock the *restClientService.get* calls that it triggers.
-        // The parent method calls restClientService.get(cepPartyNameUrl, ...).
-        // We need to know cepPartyNameUrl. If it's a constant or injectable, we could mock it.
-        // For now, let's proceed with the assumption that the first 'get' call inside retrieveTransferDetail
-        // (after the initial one for detail) is for the name, and the second is for contact.
-        // This is fragile. A better way is to mock the abstract class's methods if possible, or ensure the mock order is correct.
-        // Let's assume the mocking is correct for the purpose of this explanation and focus on the core test logic.
+        // --- CRITICAL: Mock the specific restClientService.get calls with exact URLs ---
+        // 1. Call for retrieveTransferDetail itself
+        when(mockRestClientService.get(
+                eq(MOCK_TRADE_ONLINE_URL + "/transfers/{transferReferenceNumber}?customerInternalNumber=" + customerInternalNumber + "&sParameterType=SENS"), // This is how UriComponentsBuilder builds it with the number
+                anyMap(), // request headers rebuilt
+                eq(RetrieveTransferDetailResponse.class),
+                anyInt(), // timeout
+                anyBoolean() // printMessageLog
+        )).thenReturn(mockResponse);
 
-        // The key mocking point: retrieveCustomerNamesWithCinNumber calls restClientService.get with the name URL.
-        // We've mocked the first call to return mockPartyNameResponse.
-        // The test logic inside addCustomerNameToUri checks if this response and its getName() are not null.
+        // 2. Call for retrieveCustomerAccounts (inside retrieveTransferDetail)
+        when(mockRestClientService.get(
+                eq(MOCK_ACCOUNTS_MAP_URL + "accounts-map?consumerId=DAC"), // Built URI string
+                anyMap(), // request headers rebuilt
+                eq(CustomerAccounts.class),
+                anyInt(), // timeout
+                anyBoolean() // printMessageLog
+        )).thenReturn(mockCustomerAccounts);
+
+        // 3. Call for retrieveCustomerNamesWithCinNumber (inside addCustomerNameToUri)
+        // The URL is built inside retrieveCustomerNamesWithCinNumber using cepPartyNameUrl.
+        // It replaces "CIN-SensitiveHeadersKey" with the actual CIN.
+        // Mock the URL after the replacement: cepPartyNameUrl.replace("CIN-SensitiveHeadersKey", cinNumber)
+        String expectedNameUrl = MOCK_CEP_PARTY_NAME_URL.replace("CIN-SensitiveHeadersKey", customerInternalNumber);
+        when(mockRestClientService.get(
+                eq(expectedNameUrl),
+                anyMap(), // headers with E2E token (from updateHeaderforCEP)
+                eq(PartyNameResponse.class),
+                anyInt(), // timeout
+                anyBoolean() // printMessageLog
+        )).thenReturn(mockPartyNameResponse);
+
+        // 4. Call for retrieveCustomerPhoneNumberWithCinNumber (inside addCustomerContactToUri)
+        // Similarly, mock the URL after CIN replacement.
+        String expectedContactUrl = MOCK_CEP_PARTY_CONTACT_URL.replace("CIN-SensitiveHeadersKey", customerInternalNumber);
+        when(mockRestClientService.get(
+                eq(expectedContactUrl),
+                anyMap(), // headers with E2E token (from updateHeaderforCEP)
+                eq(PartyContactResponse.class),
+                anyInt(), // timeout
+                anyBoolean() // printMessageLog
+        )).thenReturn(mockPartyContactResponse);
+
+        // Mock E2E token generation for updateHeaderforCEP calls (used by addCustomerNameToUri and addCustomerContactToUri)
+        when(mockE2ETrustTokenUtil.getE2ETrustToken()).thenReturn("mock-e2e-token");
+
+        // Mock retrieveCustomerProfilesService.getCIN if needed by buildRequestHeaders (though CIN is already in baseRequestHeaders)
+        // when(mockRetrieveCustomerProfilesService.getCIN(anyMap())).thenReturn("fallback-cin"); // Not needed if CIN is in baseRequestHeaders
 
         // Act
         RetrieveTransferDetailResponse result = tradeTransferService.retrieveTransferDetail(baseRequestHeaders, transferReferenceNumber);
 
         // Assert
         assertNotNull(result);
-        // Verify interactions: get for detail, get for accounts, get for name (should be called and return non-null name),
-        // get for contact (should be called), get for account IDs if checksum is involved in detail logic later (maybe not directly in addCustomerNameToUri)
-        verify(mockRestClientService, times(1)).get(anyString(), anyMap(), eq(RetrieveTransferDetailResponse.class), anyInt(), anyBoolean());
-        verify(mockRestClientService, times(1)).get(anyString(), anyMap(), eq(CustomerAccounts.class), anyInt(), anyBoolean());
-        // The name and contact calls are harder to verify precisely without knowing the exact URLs or having more specific mocks.
-        // The important thing is that the internal logic of addCustomerNameToUri was executed,
-        // and since we provided a mockName, the query params for name should have been added to the URI builder.
-        // The URI building happens internally and is not directly verifiable here without mocking UriComponentsBuilder,
-        // which is typically not done in unit tests of the service layer interacting with the client.
-        // The success of the call implies the name logic path was traversed correctly (no NPE).
+        // Verify the specific interactions happened
+        verify(mockRestClientService, times(1)).get(
+                eq(MOCK_TRADE_ONLINE_URL + "/transfers/{transferReferenceNumber}?customerInternalNumber=" + customerInternalNumber + "&sParameterType=SENS"),
+                anyMap(),
+                eq(RetrieveTransferDetailResponse.class),
+                anyInt(),
+                anyBoolean()
+        );
+        verify(mockRestClientService, times(1)).get(
+                eq(MOCK_ACCOUNTS_MAP_URL + "accounts-map?consumerId=DAC"),
+                anyMap(),
+                eq(CustomerAccounts.class),
+                anyInt(),
+                anyBoolean()
+        );
+        verify(mockRestClientService, times(1)).get(
+                eq(expectedNameUrl),
+                anyMap(),
+                eq(PartyNameResponse.class),
+                anyInt(),
+                anyBoolean()
+        );
+        verify(mockRestClientService, times(1)).get(
+                eq(expectedContactUrl),
+                anyMap(),
+                eq(PartyContactResponse.class),
+                anyInt(),
+                anyBoolean()
+        );
+        // Verify E2E token was fetched twice (once for name, once for contact)
+        verify(mockE2ETrustTokenUtil, times(2)).getE2ETrustToken();
     }
