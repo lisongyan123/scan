@@ -1,4 +1,11 @@
-    @Test
+    private static final String MOCK_TRADE_ONLINE_URL = "http://mock-trade-online";
+    private static final String MOCK_ACCOUNTS_MAP_URL = "http://mock-accounts-map";
+    private static final String MOCK_CEP_PARTY_NAME_URL = "http://mock-cep-party-name";
+    private static final String MOCK_CEP_PARTY_CONTACT_URL = "http://mock-cep-party-contact";
+    private static final String MOCK_MDS_GOLD_QUOTES_URL = "http://mock-mds-gold";
+    private static final String MOCK_CUSTOMER_ACCOUNT_URL = "http://mock-customer-account";
+
+@Test
     void testRetrieveTransferDetail_Success_WithCustomerName() {
         // Arrange
         String transferReferenceNumber = "ref123";
