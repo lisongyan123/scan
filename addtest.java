@@ -48,3 +48,26 @@ void modifyTransfers_AcceptAction_Success_WithAccountIdRetrieved() {
     assertEquals("123456789", request.getData().getReceiverInvestmentAccount().getAccountNumber());
     assertEquals("HK", request.getData().getReceiverInvestmentAccount().getCountryAccountCode());
 }
+
+
+
+@Test
+void setSenderNames_WhenPartyNameResponseNameIsNull_ShouldNotSetNames() {
+    // Arrange
+    CreateTransferRequest createTransferRequest = new CreateTransferRequest();
+    CreateTransferRequestData data = new CreateTransferRequestData();
+    createTransferRequest.setData(data);
+    
+    // 创建一个 PartyNameResponse 对象，但明确将其 name 字段设为 null
+    PartyNameResponse partyNameResponse = new PartyNameResponse();
+    partyNameResponse.setName(null); // <-- 这就是我们模拟的“不确定的入参出参”中的一个边界情况！
+
+    // Act
+    tradeTransferService.setSenderNames(createTransferRequest, partyNameResponse);
+
+    // Assert
+    // 根据被测代码逻辑，当 name 为 null 时，不应设置任何值
+    assertNull(createTransferRequest.getData().getSenderCustomerFirstName());
+    assertNull(createTransferRequest.getData().getSenderCustomerMiddleName());
+    assertNull(createTransferRequest.getData().getSenderCustomerLastName());
+}
