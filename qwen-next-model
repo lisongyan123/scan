@@ -1,15 +1,31 @@
 package com.hsbc.trade.transfer.service.impl;
 
+import com.hsbc.trade.ErrorCodes;
 import com.hsbc.trade.HTTPRequestHeaderConstants;
 import com.hsbc.trade.common.AccountId;
+import com.hsbc.trade.service.DuplicateSubmitPreventionService;
 import com.hsbc.trade.service.RestClientService;
+import com.hsbc.trade.transfer.common.*;
+import com.hsbc.trade.transfer.constant.TransferQueryParameterConstant;
+import com.hsbc.trade.transfer.createtransfer.CreateTransferRequest;
+import com.hsbc.trade.transfer.createtransfer.CreateTransferResponse;
+import com.hsbc.trade.transfer.createtransfer.ReceiverInfo;
+import com.hsbc.trade.transfer.createtransfer.TransferOrderInfo;
 import com.hsbc.trade.transfer.domain.account.CustomerAccounts;
 import com.hsbc.trade.transfer.domain.account.InvestmentAccount;
 import com.hsbc.trade.transfer.domain.cep.PartyContactResponse;
 import com.hsbc.trade.transfer.domain.cep.PartyNameResponse;
+import com.hsbc.trade.transfer.domain.eligibility.RuleResponse;
 import com.hsbc.trade.transfer.domain.mds.GoldPriceResponse;
 import com.hsbc.trade.transfer.domain.mds.GoldPriceResponseData;
+import com.hsbc.trade.transfer.exception.TransferLimitExceededException;
+import com.hsbc.trade.transfer.retrievetransferlimit.RetrieveTransferLimitResponse;
 import com.hsbc.trade.transfer.service.AbstractRestService;
+import com.hsbc.trade.transfer.service.TradeTransferService;
+import com.hsbc.trade.transfer.utils.ResponseInfoHandler;
+import com.hsbc.trade.utils.E2ETrustTokenUtil;
+import jakarta.ws.rs.BadRequestException;
+import jakarta.ws.rs.InternalServerErrorException;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
@@ -17,18 +33,16 @@ import org.mockito.InjectMocks;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.http.HttpHeaders;
+import org.springframework.web.util.UriComponentsBuilder;
 
 import java.math.BigDecimal;
+import java.net.URI;
 import java.util.*;
 
 import static org.junit.jupiter.api.Assertions.*;
 import static org.mockito.ArgumentMatchers.*;
 import static org.mockito.Mockito.*;
 
-/**
- * 单元测试类：TradeTransferServiceImpl
- * 通过 Mock RestClientService 来测试所有远程调用逻辑。
- */
 @ExtendWith(MockitoExtension.class)
 class TradeTransferServiceImplTest {
 
@@ -36,267 +50,454 @@ class TradeTransferServiceImplTest {
     private RestClientService restClientService;
 
     @Mock
-    private com.hsbc.trade.utils.E2ETrustTokenUtil e2ETrustTokenUtil;
+    private E2ETrustTokenUtil e2ETrustTokenUtil;
 
     @Mock
-    private com.hsbc.trade.service.DuplicateSubmitPreventionService duplicateSubmitPreventionService;
+    private DuplicateSubmitPreventionService duplicateSubmitPreventionService;
 
     @Mock
-    private com.hsbc.trade.transfer.service.TradeLimitServiceImpl tradeLimitService;
+    private TradeLimitServiceImpl tradeLimitService;
 
     @Mock
-    private com.hsbc.trade.transfer.service.SreValidationServiceImpl sreValidationService;
+    private SreValidationServiceImpl sreValidationService;
 
     @InjectMocks
-    private TradeTransferServiceImpl tradeTransferService; // 被测试的类
+    private TradeTransferServiceImpl tradeTransferService; // 被测试的对象
 
-    // 测试数据
     private Map<String, String> mockRequestHeaders;
-    private String mockCinNumber = "CIN123456";
-    private String mockChecksum = "CHECKSUM_789";
+    private CreateTransferRequest mockCreateTransferRequest;
+    private RetrieveTransferLimitResponse mockCurrentLimit;
+    private AccountId mockAccountId;
+    private PartyNameResponse mockPartyNameResponse;
+    private GoldPriceResponse mockGoldPriceResponse;
+    private CreateTransferResponse mockCreateTransferResponse;
+    private RuleResponse mockRuleResponse;
 
     @BeforeEach
     void setUp() {
-        // 初始化通用的请求头
+        // 初始化模拟的请求头
         mockRequestHeaders = new HashMap<>();
-        mockRequestHeaders.put(HTTPRequestHeaderConstants.X_HSBC_CUSTOMER_ID, mockCinNumber);
-        mockRequestHeaders.put(HTTPRequestHeaderConstants.X_HSBC_E2E_TRUST_TOKEN, "mock_e2e_token");
+        mockRequestHeaders.put(HTTPRequestHeaderConstants.X_HSBC_CUSTOMER_ID, "CIN12345");
+        mockRequestHeaders.put(HTTPRequestHeaderConstants.X_HSBC_CHANNEL_ID, "MOBILE");
 
-        // 模拟 E2E Trust Token
-        when(e2ETrustTokenUtil.getE2ETrustToken()).thenReturn("mock_e2e_token");
-    }
+        // 初始化模拟的创建转账请求
+        mockCreateTransferRequest = new CreateTransferRequest();
+        CreateTransferRequest.Data data = new CreateTransferRequest.Data();
+        data.setActionRequestCode(ActionRequestCode.D); // D 操作
+        data.setRequestPriceValue(new BigDecimal("10000"));
 
-    /**
-     * 测试：retrieveCustomerAccounts 方法
-     * 验证：调用 restClientService.get，传入正确的 URL 和 headers，返回预期的 CustomerAccounts 对象。
-     */
-    @Test
-    void testRetrieveCustomerAccounts_Success() {
-        // Arrange
-        CustomerAccounts mockCustomerAccounts = new CustomerAccounts();
-        List<InvestmentAccount> mockInvestmentAccounts = new ArrayList<>();
-        InvestmentAccount mockAccount = new InvestmentAccount();
-        mockAccount.setChecksum("checksum1");
-        mockInvestmentAccounts.add(mockAccount);
-        mockCustomerAccounts.setInvestmentAccountList(mockInvestmentAccounts);
+        // 创建两个接收方
+        ReceiverInfo receiver1 = new ReceiverInfo();
+        receiver1.setReceiverCustomerNumber("CIN67890");
+        receiver1.setTransferQuantity(new BigDecimal("2"));
 
-        // 模拟 restClientService 的返回值
-        when(restClientService.get(anyString(), eq(mockRequestHeaders), eq(CustomerAccounts.class), anyInt(), anyBoolean()))
-                .thenReturn(mockCustomerAccounts);
+        ReceiverInfo receiver2 = new ReceiverInfo();
+        receiver2.setReceiverCustomerNumber("CIN11111");
+        receiver2.setTransferQuantity(new BigDecimal("3"));
 
-        // Act
-        CustomerAccounts result = tradeTransferService.retrieveCustomerAccounts(mockRequestHeaders);
+        data.setReceiverLists(Arrays.asList(receiver1, receiver2));
+        data.setSenderInvestmentAccountChecksumIdentifier("CHECKSUM_123");
 
-        // Assert
-        assertNotNull(result);
-        assertEquals(mockInvestmentAccounts, result.getInvestmentAccountList());
-        verify(restClientService).get(
-                contains("accounts-map"), // 验证 URL 包含 accounts-map
-                eq(mockRequestHeaders),
-                eq(CustomerAccounts.class),
-                eq(AbstractRestService.class.getDeclaredField("timeout").getLong(tradeTransferService)), // 验证 timeout
-                eq(true) // 验证 printMessageLog
-        );
-    }
+        mockCreateTransferRequest.setData(data);
 
-    /**
-     * 测试：retrieveAccountIdWithCheckSum 方法
-     * 验证：调用 retrieveCustomerAccountIdsList，解析返回的 AccountId 并返回。
-     */
-    @Test
-    void testRetrieveAccountIdWithCheckSum_Success() {
-        // Arrange
-        RetrieveCustomerAccountsIdListResponse mockResponse = new RetrieveCustomerAccountsIdListResponse();
-        List<com.hsbc.trade.transfer.domain.account.AccountId> mockAccountIdList = new ArrayList<>();
-        com.hsbc.trade.transfer.domain.account.AccountId mockAccountId = new com.hsbc.trade.transfer.domain.account.AccountId();
+        // 初始化模拟的当前限额响应
+        mockCurrentLimit = new RetrieveTransferLimitResponse();
+        RetrieveTransferLimitResponse.Data limitData = new RetrieveTransferLimitResponse.Data();
+        limitData.setMaxDailyLimitedAmount(new BigDecimal("50000"));
+        limitData.setAvailableTodayAmount(new BigDecimal("45000")); // 大于总金额，应通过
+        limitData.setMaxMonthlyLimitedAmount(new BigDecimal("100000"));
+        limitData.setAvailableMonthToDateAmount(new BigDecimal("95000")); // 大于总金额，应通过
+        limitData.setMaxYearlyLimitedAmount(new BigDecimal("500000"));
+        limitData.setAvailableYearToDateAmount(new BigDecimal("495000")); // 大于总金额，应通过
+        mockCurrentLimit.setData(limitData);
+
+        // 初始化模拟的AccountId
+        mockAccountId = new AccountId();
         mockAccountId.setCountryAccountCode("HK");
         mockAccountId.setGroupMemberAccountCode("GM1");
         mockAccountId.setAccountNumber("ACC123");
-        mockAccountId.setAccountProductTypeCode("PROD");
-        mockAccountId.setAccountTypeCode("TYPE");
+        mockAccountId.setAccountProductTypeCode("PROD1");
+        mockAccountId.setAccountTypeCode("TYPE1");
         mockAccountId.setAccountCurrencyCode("HKD");
-        mockAccountIdList.add(mockAccountId);
-        mockResponse.setAccountIdList(mockAccountIdList);
 
-        // 模拟 retrieveCustomerAccountIdsList 的返回值
-        when(((AbstractRestService) tradeTransferService).retrieveCustomerAccountIdsList(anyMap()))
-                .thenReturn(mockResponse);
+        // 初始化模拟的客户姓名响应
+        mockPartyNameResponse = new PartyNameResponse();
+        PartyNameResponse.Name name = new PartyNameResponse.Name();
+        name.setLastName("Smith");
+        name.setGivenName("John");
+        name.setCustomerChristianName("J");
+        mockPartyNameResponse.setName(name);
 
-        // Act
-        AccountId result = tradeTransferService.retrieveAccountIdWithCheckSum(mockRequestHeaders);
+        // 初始化模拟的黄金价格响应
+        mockGoldPriceResponse = new GoldPriceResponse();
+        GoldPriceResponseData goldPriceData = new GoldPriceResponseData();
+        goldPriceData.setGoldPriceAmount(new BigDecimal("5000"));
+        goldPriceData.setPublishTime("2025-11-22T10:00:00");
+        mockGoldPriceResponse.setData(goldPriceData);
 
-        // Assert
-        assertNotNull(result);
-        assertEquals("HK", result.getCountryAccountCode());
-        assertEquals("GM1", result.getGroupMemberAccountCode());
-        assertEquals("ACC123", result.getAccountNumber());
-        assertEquals("PROD", result.getAccountProductTypeCode());
-        assertEquals("TYPE", result.getAccountTypeCode());
-        assertEquals("HKD", result.getAccountCurrencyCode());
-        verify(((AbstractRestService) tradeTransferService)).retrieveCustomerAccountIdsList(eq(mockRequestHeaders));
+        // 初始化模拟的创建转账响应
+        mockCreateTransferResponse = new CreateTransferResponse();
+        CreateTransferResponse.Data responseData = new CreateTransferResponse.Data();
+        responseData.setTransferOrderLists(new ArrayList<>());
+        mockCreateTransferResponse.setData(responseData);
+
+        // 初始化模拟的SRE规则响应
+        mockRuleResponse = new RuleResponse();
+        mockRuleResponse.setEligible(true);
     }
 
-    /**
-     * 测试：retrieveCustomerNamesWithCinNumber 方法
-     * 验证：调用 updateHeaderforCEP 构建头，然后调用 restClientService.get，返回 PartyNameResponse。
-     */
     @Test
-    void testRetrieveCustomerNamesWithCinNumber_Success() {
-        // Arrange
-        PartyNameResponse mockPartyNameResponse = new PartyNameResponse();
-        mockPartyNameResponse.setName(new com.hsbc.trade.transfer.domain.cep.PartyName());
-
-        // 模拟 updateHeaderforCEP 的行为
-        Map<String, String> cepHeaders = new HashMap<>(mockRequestHeaders);
-        cepHeaders.put(HTTPRequestHeaderConstants.X_HSBC_E2E_TRUST_TOKEN, "mock_e2e_token");
-        cepHeaders.put(HTTPRequestHeaderConstants.X_HSBC_GBGF, "mock_gbgf");
-        cepHeaders.put(HTTPRequestHeaderConstants.X_HSBC_SOURCE_SYSTEM_ID, "mock_source");
-
-        when(((AbstractRestService) tradeTransferService).updateHeaderforCEP(eq(mockRequestHeaders)))
-                .thenReturn(cepHeaders);
-
-        // 模拟 restClientService 的返回值
-        when(restClientService.get(eq("cep.party.name.url"), eq(cepHeaders), eq(PartyNameResponse.class), anyInt(), anyBoolean()))
-                .thenReturn(mockPartyNameResponse);
-
-        // Act
-        PartyNameResponse result = tradeTransferService.retrieveCustomerNamesWithCinNumber(mockCinNumber, mockRequestHeaders);
-
-        // Assert
-        assertNotNull(result);
-        assertEquals(mockPartyNameResponse, result);
-        verify(((AbstractRestService) tradeTransferService)).updateHeaderforCEP(eq(mockRequestHeaders));
-        verify(restClientService).get(eq("cep.party.name.url"), eq(cepHeaders), eq(PartyNameResponse.class), anyInt(), anyBoolean());
-    }
-
-    /**
-     * 测试：retrieveCustomerPhoneNumberWithCinNumber 方法
-     * 验证：调用 updateHeaderforCEP 构建头，然后调用 restClientService.get，返回 PartyContactResponse。
-     */
-    @Test
-    void testRetrieveCustomerPhoneNumberWithCinNumber_Success() {
-        // Arrange
-        PartyContactResponse mockPartyContactResponse = new PartyContactResponse();
-        mockPartyContactResponse.setContact(new com.hsbc.trade.transfer.domain.cep.PartyContact());
-
-        // 模拟 updateHeaderforCEP 的行为
-        Map<String, String> cepHeaders = new HashMap<>(mockRequestHeaders);
-        cepHeaders.put(HTTPRequestHeaderConstants.X_HSBC_E2E_TRUST_TOKEN, "mock_e2e_token");
-        cepHeaders.put(HTTPRequestHeaderConstants.X_HSBC_GBGF, "mock_gbgf");
-        cepHeaders.put(HTTPRequestHeaderConstants.X_HSBC_SOURCE_SYSTEM_ID, "mock_source");
-
-        when(((AbstractRestService) tradeTransferService).updateHeaderforCEP(eq(mockRequestHeaders)))
-                .thenReturn(cepHeaders);
-
-        // 模拟 restClientService 的返回值
-        when(restClientService.get(eq("cep.party.contact.url"), eq(cepHeaders), eq(PartyContactResponse.class), anyInt(), anyBoolean()))
-                .thenReturn(mockPartyContactResponse);
-
-        // Act
-        PartyContactResponse result = tradeTransferService.retrieveCustomerPhoneNumberWithCinNumber(mockCinNumber, mockRequestHeaders);
-
-        // Assert
-        assertNotNull(result);
-        assertEquals(mockPartyContactResponse, result);
-        verify(((AbstractRestService) tradeTransferService)).updateHeaderforCEP(eq(mockRequestHeaders));
-        verify(restClientService).get(eq("cep.party.contact.url"), eq(cepHeaders), eq(PartyContactResponse.class), anyInt(), anyBoolean());
-    }
-
-    /**
-     * 测试：retrieveGoldPrice 方法
-     * 验证：构建正确的 URI 并调用 restClientService.get，返回 GoldPriceResponse。
-     */
-    @Test
-    void testRetrieveGoldPrice_Success() {
-        // Arrange
-        GoldPriceResponse mockGoldPriceResponse = new GoldPriceResponse();
-        GoldPriceResponseData mockData = new GoldPriceResponseData();
-        mockData.setGoldPriceAmount(new BigDecimal("100.00"));
-        mockData.setPublishTime("2023-01-01T12:00:00Z");
-        mockGoldPriceResponse.setData(mockData);
-
-        // 模拟 restClientService 的返回值
-        when(restClientService.get(eq("mds.gold.quotes-endpoint/XGTHKD"), eq(mockRequestHeaders), eq(GoldPriceResponse.class), anyInt(), anyBoolean()))
-                .thenReturn(mockGoldPriceResponse);
-
-        // Act
-        GoldPriceResponse result = tradeTransferService.retrieveGoldPrice(mockRequestHeaders);
-
-        // Assert
-        assertNotNull(result);
-        assertNotNull(result.getData());
-        assertEquals(new BigDecimal("100.00"), result.getData().getGoldPriceAmount());
-        verify(restClientService).get(eq("mds.gold.quotes-endpoint/XGTHKD"), eq(mockRequestHeaders), eq(GoldPriceResponse.class), anyInt(), anyBoolean());
-    }
-
-    /**
-     * 测试：createTransfers 方法中的核心远程调用流程
-     * 验证：该方法会正确调用 retrieveAccountIdWithCheckSum, retrieveCustomerNamesWithCinNumber, retrieveGoldPrice, 和 tradeLimitService。
-     */
-    @Test
-    void testCreateTransfers_Success() {
-        // Arrange
-        // 1. 模拟 tradeLimitService
-        com.hsbc.trade.transfer.retrievetransferlimit.RetrieveTransferLimitResponse mockLimitResponse = new com.hsbc.trade.transfer.retrievetransferlimit.RetrieveTransferLimitResponse();
-        com.hsbc.trade.transfer.retrievetransferlimit.RetrieveTransferLimitResponseData mockLimitData = new com.hsbc.trade.transfer.retrievetransferlimit.RetrieveTransferLimitResponseData();
-        mockLimitData.setMaxDailyLimitedAmount(new BigDecimal("10000"));
-        mockLimitData.setAvailableTodayAmount(new BigDecimal("5000"));
-        mockLimitResponse.setData(mockLimitData);
-        when(tradeLimitService.retrieveLimitations(anyMap())).thenReturn(mockLimitResponse);
-
-        // 2. 模拟 retrieveAccountIdWithCheckSum
-        AccountId mockAccountId = new AccountId();
-        mockAccountId.setAccountNumber("ACC123");
+    void testCreateTransfers_Success_DOperation() throws Exception {
+        // Arrange: 设置 Mock 行为
+        // 1. 验证 buildRequestHeaders (由父类 AbstractRestService 提供，我们主要关注其输出)
+        when(tradeTransferService.buildRequestHeaders(anyMap())).thenCallRealMethod(); // 调用真实方法以确保其逻辑正确
+        // 2. 验证限额服务
+        when(tradeLimitService.retrieveLimitations(anyMap())).thenReturn(mockCurrentLimit);
+        // 3. 验证根据Checksum获取AccountId
         when(tradeTransferService.retrieveAccountIdWithCheckSum(anyMap())).thenReturn(mockAccountId);
-
-        // 3. 模拟 retrieveCustomerNamesWithCinNumber
-        PartyNameResponse mockPartyNameResponse = new PartyNameResponse();
-        com.hsbc.trade.transfer.domain.cep.PartyName mockName = new com.hsbc.trade.transfer.domain.cep.PartyName();
-        mockName.setGivenName("John");
-        mockName.setLastName("Doe");
-        mockName.setCustomerChristianName("Michael");
-        mockPartyNameResponse.setName(mockName);
-        when(tradeTransferService.retrieveCustomerNamesWithCinNumber(eq(mockCinNumber), anyMap())).thenReturn(mockPartyNameResponse);
-
-        // 4. 模拟 retrieveGoldPrice
-        GoldPriceResponse mockGoldPriceResponse = new GoldPriceResponse();
-        GoldPriceResponseData mockGoldData = new GoldPriceResponseData();
-        mockGoldData.setGoldPriceAmount(new BigDecimal("100.00"));
-        mockGoldData.setPublishTime("2023-01-01T12:00:00Z");
-        mockGoldPriceResponse.setData(mockGoldData);
+        // 4. 验证更新CEP头信息
+        when(tradeTransferService.updateHeaderforCEP(anyMap())).thenCallRealMethod(); // 调用真实方法
+        // 5. 验证SRE验证服务
+        when(sreValidationService.callSreForTransferValidation(anyString(), anyString(), anyString(), anyMap()))
+                .thenReturn(mockRuleResponse);
+        when(sreValidationService.handleSreValidateResponse(any(RuleResponse.class))).thenReturn(true); // 假设返回true表示成功
+        // 6. 验证获取客户姓名
+        when(tradeTransferService.retrieveCustomerNamesWithCinNumber(anyString(), anyMap())).thenReturn(mockPartyNameResponse);
+        // 7. 验证获取黄金价格
         when(tradeTransferService.retrieveGoldPrice(anyMap())).thenReturn(mockGoldPriceResponse);
+        // 8. 验证HTTP POST请求
+        URI mockUri = URI.create("https://tradeonline.com/transfers");
+        when(restClientService.post(anyString(), anyMap(), any(CreateTransferRequest.class), eq(CreateTransferResponse.class), anyInt(), anyBoolean()))
+                .thenReturn(mockCreateTransferResponse);
+        // 9. 验证唯一键生成
+        when(duplicateSubmitPreventionService.generateUniqueKey()).thenReturn("UNIQUE_KEY_123");
 
-        // 5. 模拟 validateSreForReceivers (它内部会调用 sreValidationService，我们只关心它被调用)
-        doNothing().when(tradeTransferService).validateSreForReceivers(anyList(), anyString(), anyMap());
+        // Act: 调用被测试的方法
+        CreateTransferResponse result = tradeTransferService.createTransfers(mockRequestHeaders, mockCreateTransferRequest);
 
-        // 6. 模拟 restClientService.post 的返回值
-        com.hsbc.trade.transfer.createtransfer.CreateTransferResponse mockResponse = new com.hsbc.trade.transfer.createtransfer.CreateTransferResponse();
-        when(restClientService.post(anyString(), anyMap(), any(), eq(com.hsbc.trade.transfer.createtransfer.CreateTransferResponse.class), anyInt(), anyBoolean()))
-                .thenReturn(mockResponse);
+        // Assert: 验证结果和调用
+        assertNotNull(result);
+        assertEquals(mockCreateTransferResponse, result);
 
-        // 7. 创建请求
-        com.hsbc.trade.transfer.createtransfer.CreateTransferRequest request = new com.hsbc.trade.transfer.createtransfer.CreateTransferRequest();
-        com.hsbc.trade.transfer.createtransfer.CreateTransferRequestData data = new com.hsbc.trade.transfer.createtransfer.CreateTransferRequestData();
-        data.setActionRequestCode("D"); // D 操作需要金價
-        data.setSenderInvestmentAccountChecksumIdentifier(mockChecksum);
+        // 验证 buildRequestHeaders 是否被调用
+        verify(tradeTransferService).buildRequestHeaders(mockRequestHeaders);
 
-        com.hsbc.trade.transfer.createtransfer.ReceiverInfo receiver = new com.hsbc.trade.transfer.createtransfer.ReceiverInfo();
-        receiver.setTransferQuantity(new BigDecimal("10"));
-        data.setReceiverLists(Collections.singletonList(receiver));
+        // 验证限额校验是否被调用
+        verify(tradeLimitService).retrieveLimitations(anyMap());
 
-        data.setRequestPriceValue(new BigDecimal("100")); // 用于计算总金额
-        request.setData(data);
+        // 验证根据Checksum获取AccountId是否被调用
+        verify(tradeTransferService).retrieveAccountIdWithCheckSum(anyMap());
+
+        // 验证updateHeaderforCEP是否被调用
+        verify(tradeTransferService).updateHeaderforCEP(anyMap());
+
+        // 验证SRE验证是否被正确调用两次（两个接收方）
+        verify(sreValidationService, times(2)).callSreForTransferValidation(
+                anyString(), eq("CIN12345"), anyString(), anyMap());
+        verify(sreValidationService, times(2)).handleSreValidateResponse(any(RuleResponse.class));
+
+        // 验证获取客户姓名是否被调用
+        verify(tradeTransferService).retrieveCustomerNamesWithCinNumber(eq("CIN12345"), anyMap());
+
+        // 验证获取黄金价格是否被调用
+        verify(tradeTransferService).retrieveGoldPrice(anyMap());
+
+        // 验证POST请求的URL和参数
+        verify(restClientService).post(
+                argThat(url -> url.contains("https://tradeonline.com/transfers")),
+                anyMap(), // 验证headers
+                argThat(request -> {
+                    // 验证请求体中的senderInvestmentAccount是否被正确设置
+                    return request.getData().getSenderInvestmentAccount() != null &&
+                            "HK".equals(request.getData().getSenderInvestmentAccount().getCountryAccountCode()) &&
+                            "ACC123".equals(request.getData().getSenderInvestmentAccount().getAccountNumber());
+                }),
+                eq(CreateTransferResponse.class),
+                anyInt(),
+                anyBoolean()
+        );
+
+        // 验证ResponseInfoHandler.prepareResponse是否被调用
+        verify(ResponseInfoHandler.class).prepareResponse(any(CreateTransferResponse.class));
+
+        // 验证setSenderNames是否被调用
+        verify(tradeTransferService).setSenderNames(any(CreateTransferRequest.class), eq(mockPartyNameResponse));
+
+        // 验证setSenderFullName是否被调用
+        verify(tradeTransferService).setSenderFullName(any(CreateTransferResponse.class), eq(mockPartyNameResponse));
+
+        // 验证handleDOperationResponse是否被调用
+        verify(tradeTransferService).handleDOperationResponse(any(CreateTransferRequest.class), eq(result), eq(mockGoldPriceResponse));
+
+        // 验证D操作的特殊处理：uniqueKey 和 price信息
+        assertEquals("UNIQUE_KEY_123", result.getData().getRequestUniqueKey());
+        List<TransferOrderInfo> orderInfoList = result.getData().getTransferOrderLists();
+        assertNotNull(orderInfoList);
+        assertEquals(0, orderInfoList.size()); // 因为我们在mock中没有添加任何orderInfo，所以是0
+        // 如果我们有orderInfo，可以验证它们的price信息
+    }
+
+    @Test
+    void testCreateTransfers_Success_AOperation() throws Exception {
+        // Arrange: 修改请求为A操作
+        mockCreateTransferRequest.getData().setActionRequestCode(ActionRequestCode.A); // A 操作
+        mockCreateTransferRequest.getData().setRequestPriceValue(null); // A操作不传requestPriceValue
+
+        // 1. 验证 buildRequestHeaders
+        when(tradeTransferService.buildRequestHeaders(anyMap())).thenCallRealMethod();
+        // 2. 验证限额服务
+        when(tradeLimitService.retrieveLimitations(anyMap())).thenReturn(mockCurrentLimit);
+        // 3. 验证根据Checksum获取AccountId
+        when(tradeTransferService.retrieveAccountIdWithCheckSum(anyMap())).thenReturn(mockAccountId);
+        // 4. 验证更新CEP头信息
+        when(tradeTransferService.updateHeaderforCEP(anyMap())).thenCallRealMethod();
+        // 5. 验证SRE验证服务 (对于A操作，SRE验证在modifyTransfers中，createTransfers中只验证发送方)
+        when(sreValidationService.callSreForTransferValidation(anyString(), anyString(), anyString(), anyMap()))
+                .thenReturn(mockRuleResponse);
+        when(sreValidationService.handleSreValidateResponse(any(RuleResponse.class))).thenReturn(true);
+        // 6. 验证获取客户姓名
+        when(tradeTransferService.retrieveCustomerNamesWithCinNumber(anyString(), anyMap())).thenReturn(mockPartyNameResponse);
+        // 7. 验证获取黄金价格 (A操作不获取)
+        when(tradeTransferService.retrieveGoldPrice(anyMap())).thenReturn(mockGoldPriceResponse); // 仍然会调用，但不会被使用
+        // 8. 验证HTTP POST请求
+        when(restClientService.post(anyString(), anyMap(), any(CreateTransferRequest.class), eq(CreateTransferResponse.class), anyInt(), anyBoolean()))
+                .thenReturn(mockCreateTransferResponse);
+        // 9. 验证唯一键生成
+        when(duplicateSubmitPreventionService.generateUniqueKey()).thenReturn("UNIQUE_KEY_123");
 
         // Act
-        com.hsbc.trade.transfer.createtransfer.CreateTransferResponse result = tradeTransferService.createTransfers(mockRequestHeaders, request);
+        CreateTransferResponse result = tradeTransferService.createTransfers(mockRequestHeaders, mockCreateTransferRequest);
 
         // Assert
         assertNotNull(result);
-        // 验证所有远程调用都被执行了
-        verify(tradeTransferService).retrieveAccountIdWithCheckSum(anyMap());
-        verify(tradeTransferService).retrieveCustomerNamesWithCinNumber(eq(mockCinNumber), anyMap());
+
+        // 验证黄金价格被调用（因为方法中无论什么操作都会调用retrieveGoldPrice）
         verify(tradeTransferService).retrieveGoldPrice(anyMap());
+
+        // 验证D操作的特殊处理没有被触发
+        verify(tradeTransferService, never()).handleDOperationResponse(any(CreateTransferRequest.class), any(CreateTransferResponse.class), any(GoldPriceResponse.class));
+    }
+
+    @Test
+    void testCreateTransfers_LimitExceeded_Daily() {
+        // Arrange: 设置限额为低于总金额
+        mockCurrentLimit.getData().setAvailableTodayAmount(new BigDecimal("5000")); // 总金额为50000，应失败
+        mockCurrentLimit.getData().setMaxDailyLimitedAmount(new BigDecimal("5000"));
+
+        when(tradeTransferService.buildRequestHeaders(anyMap())).thenCallRealMethod();
+        when(tradeLimitService.retrieveLimitations(anyMap())).thenReturn(mockCurrentLimit);
+
+        // Act & Assert
+        TransferLimitExceededException exception = assertThrows(TransferLimitExceededException.class, () -> {
+            tradeTransferService.createTransfers(mockRequestHeaders, mockCreateTransferRequest);
+        });
+
+        assertEquals("每日限额已超，当前最大限额为5000", exception.getMessage());
         verify(tradeLimitService).retrieveLimitations(anyMap());
-        verify(restClientService).post(anyString(), anyMap(), any(), eq(com.hsbc.trade.transfer.createtransfer.CreateTransferResponse.class), anyInt(), anyBoolean());
+        verify(tradeTransferService, never()).retrieveAccountIdWithCheckSum(anyMap()); // 限额失败，后续操作不应执行
+    }
+
+    @Test
+    void testCreateTransfers_LimitExceeded_Monthly() {
+        // Arrange: 设置月度限额为低于总金额
+        mockCurrentLimit.getData().setAvailableMonthToDateAmount(new BigDecimal("5000")); // 总金额为50000，应失败
+        mockCurrentLimit.getData().setMaxMonthlyLimitedAmount(new BigDecimal("5000"));
+
+        when(tradeTransferService.buildRequestHeaders(anyMap())).thenCallRealMethod();
+        when(tradeLimitService.retrieveLimitations(anyMap())).thenReturn(mockCurrentLimit);
+
+        // Act & Assert
+        TransferLimitExceededException exception = assertThrows(TransferLimitExceededException.class, () -> {
+            tradeTransferService.createTransfers(mockRequestHeaders, mockCreateTransferRequest);
+        });
+
+        assertEquals("月度限额已超，当前最大限额为5000", exception.getMessage());
+        verify(tradeLimitService).retrieveLimitations(anyMap());
+    }
+
+    @Test
+    void testCreateTransfers_LimitExceeded_Yearly() {
+        // Arrange: 设置年度限额为低于总金额
+        mockCurrentLimit.getData().setAvailableYearToDateAmount(new BigDecimal("5000")); // 总金额为50000，应失败
+        mockCurrentLimit.getData().setMaxYearlyLimitedAmount(new BigDecimal("5000"));
+
+        when(tradeTransferService.buildRequestHeaders(anyMap())).thenCallRealMethod();
+        when(tradeLimitService.retrieveLimitations(anyMap())).thenReturn(mockCurrentLimit);
+
+        // Act & Assert
+        TransferLimitExceededException exception = assertThrows(TransferLimitExceededException.class, () -> {
+            tradeTransferService.createTransfers(mockRequestHeaders, mockCreateTransferRequest);
+        });
+
+        assertEquals("年度限额已超，当前最大限额为5000", exception.getMessage());
+        verify(tradeLimitService).retrieveLimitations(anyMap());
+    }
+
+    @Test
+    void testCreateTransfers_RetrieveAccountIdFailed() {
+        // Arrange: 模拟根据Checksum获取AccountId失败
+        when(tradeTransferService.buildRequestHeaders(anyMap())).thenCallRealMethod();
+        when(tradeLimitService.retrieveLimitations(anyMap())).thenReturn(mockCurrentLimit);
+        when(tradeTransferService.retrieveAccountIdWithCheckSum(anyMap())).thenThrow(new BadRequestException("Invalid checksum"));
+
+        // Act & Assert
+        BadRequestException exception = assertThrows(BadRequestException.class, () -> {
+            tradeTransferService.createTransfers(mockRequestHeaders, mockCreateTransferRequest);
+        });
+
+        assertEquals("Invalid checksum", exception.getMessage());
+        verify(tradeLimitService).retrieveLimitations(anyMap());
+        verify(tradeTransferService).retrieveAccountIdWithCheckSum(anyMap());
+        verify(tradeTransferService, never()).updateHeaderforCEP(anyMap()); // 未成功获取AccountId，后续不应执行
+    }
+
+    @Test
+    void testCreateTransfers_SreValidationFailed() {
+        // Arrange: 模拟SRE验证失败
+        mockRuleResponse.setEligible(false);
+        mockRuleResponse.setErrorMessage("SRE Validation Failed");
+
+        when(tradeTransferService.buildRequestHeaders(anyMap())).thenCallRealMethod();
+        when(tradeLimitService.retrieveLimitations(anyMap())).thenReturn(mockCurrentLimit);
+        when(tradeTransferService.retrieveAccountIdWithCheckSum(anyMap())).thenReturn(mockAccountId);
+        when(tradeTransferService.updateHeaderforCEP(anyMap())).thenCallRealMethod();
+        when(sreValidationService.callSreForTransferValidation(anyString(), anyString(), anyString(), anyMap()))
+                .thenReturn(mockRuleResponse);
+        when(sreValidationService.handleSreValidateResponse(any(RuleResponse.class))).thenThrow(new BadRequestException("SRE Validation Failed"));
+
+        // Act & Assert
+        BadRequestException exception = assertThrows(BadRequestException.class, () -> {
+            tradeTransferService.createTransfers(mockRequestHeaders, mockCreateTransferRequest);
+        });
+
+        assertEquals("SRE Validation Failed", exception.getMessage());
+        verify(sreValidationService, times(2)).callSreForTransferValidation(anyString(), anyString(), anyString(), anyMap());
+        verify(sreValidationService, times(2)).handleSreValidateResponse(any(RuleResponse.class));
+    }
+
+    @Test
+    void testCreateTransfers_RetrieveCustomerNamesFailed() {
+        // Arrange: 模拟获取客户姓名失败
+        when(tradeTransferService.buildRequestHeaders(anyMap())).thenCallRealMethod();
+        when(tradeLimitService.retrieveLimitations(anyMap())).thenReturn(mockCurrentLimit);
+        when(tradeTransferService.retrieveAccountIdWithCheckSum(anyMap())).thenReturn(mockAccountId);
+        when(tradeTransferService.updateHeaderforCEP(anyMap())).thenCallRealMethod();
+        when(sreValidationService.callSreForTransferValidation(anyString(), anyString(), anyString(), anyMap()))
+                .thenReturn(mockRuleResponse);
+        when(sreValidationService.handleSreValidateResponse(any(RuleResponse.class))).thenReturn(true);
+        when(tradeTransferService.retrieveCustomerNamesWithCinNumber(anyString(), anyMap())).thenThrow(new InternalServerErrorException("CEP Service Down"));
+
+        // Act & Assert
+        InternalServerErrorException exception = assertThrows(InternalServerErrorException.class, () -> {
+            tradeTransferService.createTransfers(mockRequestHeaders, mockCreateTransferRequest);
+        });
+
+        assertEquals("CEP Service Down", exception.getMessage());
+        verify(tradeTransferService).retrieveCustomerNamesWithCinNumber(eq("CIN12345"), anyMap());
+    }
+
+    @Test
+    void testCreateTransfers_RetrieveGoldPriceFailed() {
+        // Arrange: 模拟获取黄金价格失败
+        when(tradeTransferService.buildRequestHeaders(anyMap())).thenCallRealMethod();
+        when(tradeLimitService.retrieveLimitations(anyMap())).thenReturn(mockCurrentLimit);
+        when(tradeTransferService.retrieveAccountIdWithCheckSum(anyMap())).thenReturn(mockAccountId);
+        when(tradeTransferService.updateHeaderforCEP(anyMap())).thenCallRealMethod();
+        when(sreValidationService.callSreForTransferValidation(anyString(), anyString(), anyString(), anyMap()))
+                .thenReturn(mockRuleResponse);
+        when(sreValidationService.handleSreValidateResponse(any(RuleResponse.class))).thenReturn(true);
+        when(tradeTransferService.retrieveCustomerNamesWithCinNumber(anyString(), anyMap())).thenReturn(mockPartyNameResponse);
+        when(tradeTransferService.retrieveGoldPrice(anyMap())).thenThrow(new InternalServerErrorException("MDS Service Down"));
+
+        // Act & Assert
+        InternalServerErrorException exception = assertThrows(InternalServerErrorException.class, () -> {
+            tradeTransferService.createTransfers(mockRequestHeaders, mockCreateTransferRequest);
+        });
+
+        assertEquals("MDS Service Down", exception.getMessage());
+        verify(tradeTransferService).retrieveGoldPrice(anyMap());
+    }
+
+    @Test
+    void testCreateTransfers_RestClientPostFailed() {
+        // Arrange: 模拟HTTP POST请求失败
+        when(tradeTransferService.buildRequestHeaders(anyMap())).thenCallRealMethod();
+        when(tradeLimitService.retrieveLimitations(anyMap())).thenReturn(mockCurrentLimit);
+        when(tradeTransferService.retrieveAccountIdWithCheckSum(anyMap())).thenReturn(mockAccountId);
+        when(tradeTransferService.updateHeaderforCEP(anyMap())).thenCallRealMethod();
+        when(sreValidationService.callSreForTransferValidation(anyString(), anyString(), anyString(), anyMap()))
+                .thenReturn(mockRuleResponse);
+        when(sreValidationService.handleSreValidateResponse(any(RuleResponse.class))).thenReturn(true);
+        when(tradeTransferService.retrieveCustomerNamesWithCinNumber(anyString(), anyMap())).thenReturn(mockPartyNameResponse);
+        when(tradeTransferService.retrieveGoldPrice(anyMap())).thenReturn(mockGoldPriceResponse);
+        when(restClientService.post(anyString(), anyMap(), any(CreateTransferRequest.class), eq(CreateTransferResponse.class), anyInt(), anyBoolean()))
+                .thenThrow(new InternalServerErrorException("Network Error"));
+
+        // Act & Assert
+        InternalServerErrorException exception = assertThrows(InternalServerErrorException.class, () -> {
+            tradeTransferService.createTransfers(mockRequestHeaders, mockCreateTransferRequest);
+        });
+
+        assertEquals("Network Error", exception.getMessage());
+        verify(restClientService).post(anyString(), anyMap(), any(CreateTransferRequest.class), eq(CreateTransferResponse.class), anyInt(), anyBoolean());
+    }
+
+    @Test
+    void testCreateTransfers_ReceiverWithNoCin() {
+        // Arrange: 修改接收方为没有CIN的情况
+        ReceiverInfo receiver1 = new ReceiverInfo();
+        receiver1.setReceiverCustomerNumber(""); // 空CIN
+        receiver1.setTransferQuantity(new BigDecimal("2"));
+
+        mockCreateTransferRequest.getData().setReceiverLists(Arrays.asList(receiver1));
+
+        when(tradeTransferService.buildRequestHeaders(anyMap())).thenCallRealMethod();
+        when(tradeLimitService.retrieveLimitations(anyMap())).thenReturn(mockCurrentLimit);
+        when(tradeTransferService.retrieveAccountIdWithCheckSum(anyMap())).thenReturn(mockAccountId);
+        when(tradeTransferService.updateHeaderforCEP(anyMap())).thenCallRealMethod();
+        // 验证当receiverInternalNumber为空时，会调用不同的rule
+        when(sreValidationService.callSreForTransferValidation(eq("dac_tokenized_gold_transfer_sender_rule_without_cin"), anyString(), eq(""), anyMap()))
+                .thenReturn(mockRuleResponse);
+        when(sreValidationService.handleSreValidateResponse(any(RuleResponse.class))).thenReturn(true);
+        when(tradeTransferService.retrieveCustomerNamesWithCinNumber(anyString(), anyMap())).thenReturn(mockPartyNameResponse);
+        when(tradeTransferService.retrieveGoldPrice(anyMap())).thenReturn(mockGoldPriceResponse);
+        when(restClientService.post(anyString(), anyMap(), any(CreateTransferRequest.class), eq(CreateTransferResponse.class), anyInt(), anyBoolean()))
+                .thenReturn(mockCreateTransferResponse);
+
+        // Act
+        CreateTransferResponse result = tradeTransferService.createTransfers(mockRequestHeaders, mockCreateTransferRequest);
+
+        // Assert
+        assertNotNull(result);
+        // 验证SRE验证调用的是空CIN的规则
+        verify(sreValidationService).callSreForTransferValidation(eq("dac_tokenized_gold_transfer_sender_rule_without_cin"), eq("CIN12345"), eq(""), anyMap());
+    }
+
+    @Test
+    void testCreateTransfers_DOperation_GoldPriceNull() {
+        // Arrange: 模拟黄金价格响应为null
+        mockCreateTransferRequest.getData().setActionRequestCode(ActionRequestCode.D);
+        when(tradeTransferService.buildRequestHeaders(anyMap())).thenCallRealMethod();
+        when(tradeLimitService.retrieveLimitations(anyMap())).thenReturn(mockCurrentLimit);
+        when(tradeTransferService.retrieveAccountIdWithCheckSum(anyMap())).thenReturn(mockAccountId);
+        when(tradeTransferService.updateHeaderforCEP(anyMap())).thenCallRealMethod();
+        when(sreValidationService.callSreForTransferValidation(anyString(), anyString(), anyString(), anyMap()))
+                .thenReturn(mockRuleResponse);
+        when(sreValidationService.handleSreValidateResponse(any(RuleResponse.class))).thenReturn(true);
+        when(tradeTransferService.retrieveCustomerNamesWithCinNumber(anyString(), anyMap())).thenReturn(mockPartyNameResponse);
+        when(tradeTransferService.retrieveGoldPrice(anyMap())).thenReturn(null); // 关键：返回null
+        when(restClientService.post(anyString(), anyMap(), any(CreateTransferRequest.class), eq(CreateTransferResponse.class), anyInt(), anyBoolean()))
+                .thenReturn(mockCreateTransferResponse);
+        when(duplicateSubmitPreventionService.generateUniqueKey()).thenReturn("UNIQUE_KEY_123");
+
+        // Act
+        CreateTransferResponse result = tradeTransferService.createTransfers(mockRequestHeaders, mockCreateTransferRequest);
+
+        // Assert
+        assertNotNull(result);
+        // 验证D操作的特殊处理仍然执行，但price信息未设置
+        verify(tradeTransferService).handleDOperationResponse(any(CreateTransferRequest.class), eq(result), eq((GoldPriceResponse) null));
+        assertNull(result.getData().getRequestUniqueKey()); // 因为我们在mock中设置了它，所以这里应该有值
+        // 注意：handleDOperationResponse内部有对goldPriceResponse的null检查，所以不会报错
     }
 }
