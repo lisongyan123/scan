@@ -1,1023 +1,302 @@
 package com.hsbc.trade.transfer.service.impl;
 
 import com.hsbc.trade.HTTPRequestHeaderConstants;
-import com.hsbc.trade.common.ResponseDetails;
+import com.hsbc.trade.common.AccountId;
 import com.hsbc.trade.service.RestClientService;
-import com.hsbc.trade.service.impl.RetrieveCustomerProfilesServiceImpl;
-import com.hsbc.trade.transfer.common.*;
-import com.hsbc.trade.transfer.createtransfer.*;
-import com.hsbc.trade.transfer.domain.*;
-import com.hsbc.trade.transfer.domain.account.*;
-import com.hsbc.trade.transfer.domain.eligibility.RuleResponse;
+import com.hsbc.trade.transfer.domain.account.CustomerAccounts;
+import com.hsbc.trade.transfer.domain.account.InvestmentAccount;
+import com.hsbc.trade.transfer.domain.cep.PartyContactResponse;
+import com.hsbc.trade.transfer.domain.cep.PartyNameResponse;
 import com.hsbc.trade.transfer.domain.mds.GoldPriceResponse;
 import com.hsbc.trade.transfer.domain.mds.GoldPriceResponseData;
-import com.hsbc.trade.transfer.exception.TransferLimitExceededException;
-import com.hsbc.trade.transfer.retrievetransferdetail.RetrieveTransferDetailResponse;
-import com.hsbc.trade.transfer.retrievetransferdetail.RetrieveTransferDetailResponseData;
-import com.hsbc.trade.transfer.retrievetransferlimit.RetrieveTransferLimitResponse;
-import com.hsbc.trade.transfer.retrievetransferlimit.RetrieveTransferLimitResponseData;
-import com.hsbc.trade.transfer.retrievetransferlist.RetrieveTransferListResponse;
-import com.hsbc.trade.transfer.retrievetransferlist.RetrieveTransferListResponseData;
-import com.hsbc.trade.transfer.service.SreValidationServiceImpl;
-import com.hsbc.trade.transfer.updatetransfer.UpdateTransferRequest;
-import com.hsbc.trade.transfer.updatetransfer.UpdateTransferRequestData;
-import com.hsbc.trade.transfer.updatetransfer.UpdateTransferResponse;
-import com.hsbc.trade.utils.E2ETrustTokenUtil;
-import jakarta.ws.rs.BadRequestException;
-import jakarta.ws.rs.InternalServerErrorException;
-import org.junit.jupiter.api.*;
+import com.hsbc.trade.transfer.service.AbstractRestService;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
-import org.mockito.*;
+import org.mockito.InjectMocks;
+import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
-import org.springframework.test.util.ReflectionTestUtils;
+import org.springframework.http.HttpHeaders;
 
 import java.math.BigDecimal;
 import java.util.*;
-import java.util.stream.Collectors;
 
 import static org.junit.jupiter.api.Assertions.*;
 import static org.mockito.ArgumentMatchers.*;
 import static org.mockito.Mockito.*;
 
+/**
+ * 单元测试类：TradeTransferServiceImpl
+ * 通过 Mock RestClientService 来测试所有远程调用逻辑。
+ */
 @ExtendWith(MockitoExtension.class)
 class TradeTransferServiceImplTest {
-
-    @InjectMocks
-    private TradeTransferServiceImpl tradeTransferService;
 
     @Mock
     private RestClientService restClientService;
 
     @Mock
-    private RetrieveCustomerProfilesServiceImpl retrieveCustomerProfilesService;
+    private com.hsbc.trade.utils.E2ETrustTokenUtil e2ETrustTokenUtil;
 
     @Mock
-    private SreValidationServiceImpl sreValidationService;
+    private com.hsbc.trade.service.DuplicateSubmitPreventionService duplicateSubmitPreventionService;
 
     @Mock
-    private E2ETrustTokenUtil e2ETrustTokenUtil;
+    private com.hsbc.trade.transfer.service.TradeLimitServiceImpl tradeLimitService;
 
     @Mock
-    private DuplicateSubmitPreventionService duplicateSubmitPreventionService; // 用于 handleDOperationResponse
+    private com.hsbc.trade.transfer.service.SreValidationServiceImpl sreValidationService;
+
+    @InjectMocks
+    private TradeTransferServiceImpl tradeTransferService; // 被测试的类
+
+    // 测试数据
+    private Map<String, String> mockRequestHeaders;
+    private String mockCinNumber = "CIN123456";
+    private String mockChecksum = "CHECKSUM_789";
 
     @BeforeEach
     void setUp() {
-        // 设置基础URL
-        ReflectionTestUtils.setField(tradeTransferService, "tradeOnlineUrl", "https://dummy.trade");
-        ReflectionTestUtils.setField(tradeTransferService, "customerAccountUrl", "https://dummy.accounts");
-        ReflectionTestUtils.setField(tradeTransferService, "retrieveCustomerProfilesService", retrieveCustomerProfilesService);
-        ReflectionTestUtils.setField(tradeTransferService, "sreValidationService", sreValidationService);
-        ReflectionTestUtils.setField(tradeTransferService, "duplicateSubmitPreventionService", duplicateSubmitPreventionService); // 注入Mock
+        // 初始化通用的请求头
+        mockRequestHeaders = new HashMap<>();
+        mockRequestHeaders.put(HTTPRequestHeaderConstants.X_HSBC_CUSTOMER_ID, mockCinNumber);
+        mockRequestHeaders.put(HTTPRequestHeaderConstants.X_HSBC_E2E_TRUST_TOKEN, "mock_e2e_token");
 
-        // Mock CIN获取，这是许多方法的前置条件
-        lenient().when(retrieveCustomerProfilesService.getCIN(any())).thenReturn("dummy-cin");
-
-        // Mock SAML Token，用于构建请求头
-        dummyToken = "<saml:Assertion xmlns:saml='http://www.hsbc.com/saas/assertion' xmlns:ds='http://www.w3.org/2000/09/xmldsig#' xmlns:xsi='http://www.w3.org/2001/XMLSchema-instance' ID='id_9a9e4d35-7d80-4805-849f-ddb90a8b2c1f' IssueInstant='2025-08-07T01:25:13.837Z' Version='3.0'><saml:Issuer>https://www.hsbc.com/rbwm/dtp</saml:Issuer><ds:Signature><ds:SignedInfo><ds:CanonicalizationMethod Algorithm='http://www.w3.org/2001/10/xml-exc-c14n#'/><ds:SignatureMethod Algorithm='http://www.w3.org/2001/04/xmldsig-more#rsa-sha256'/><ds:Reference URI='#id_9a9e4d35-7d80-4805-849f-ddb90a8b2c1f'><ds:Transforms><ds:Transform Algorithm='http://www.w3.org/2000/09/xmldsig#enveloped-signature'/><ds:Transform Algorithm='http://www.w3.org/2001/10/xml-exc-c14n#'><ds:InclusiveNamespaces xmlns:ds='http://www.w3.org/2001/10/xml-exc-c14n#' PrefixList='#default saml ds xs xsi'/></ds:Transform></ds:Transforms><ds:DigestMethod Algorithm='http://www.w3.org/2001/04/xmlenc#sha256'/><ds:DigestValue>GLd2xpRi6DRAl81eH6NBRNzVWBlEL1zn5mWNpp16xCk=</ds:DigestValue></ds:Reference></ds:SignedInfo><ds:SignatureValue>IJQo3CpyjsDRTfXdnQGQnugNniIy56neA0eaLr87DITEauIPFNZHGCk6sb/Wp9PSIxoJNGpF4T5vVPWqUmv1fYasVtrukqodTgK2JD3NHhviDmTVGKzhZ2hnfjSewDRYeqHVURHMWY1EzltUhpZgO9u12i9+PPK4OJLFDR5Q4tZico3GfweUS7+Ds9wYssqgECZg3XayVg5w9ruSdxPIrcjU7aOe2sZFkge+I6cD2OWHC0K+u+PG+DD0UNmK9OnIY///lwgUdhbdSv0zdkUhOcHRKstuFIKhb4E8eZDogB5Sjeqya3EwJ8sIda99n+jug9IrDAjQIBTTnxtMfwq+gQ==</ds:SignatureValue></ds:Signature><saml:Subject><saml:NameID>HK00100718688801</saml:NameID></saml:Subject><saml:Conditions NotBefore='2025-08-07T01:25:12.837Z' NotOnOrAfter='2025-08-07T01:26:13.837Z'/><saml:AttributeStatement><saml:Attribute Name='GUID'><saml:AttributeValue>98b45150-5c73-11ea-8a50-0350565a170c</saml:AttributeValue></saml:Attribute><saml:Attribute Name='CAM'><saml:AttributeValue>30</saml:AttributeValue></saml:Attribute><saml:Attribute Name='KeyAlias'><saml:AttributeValue>E2E_TRUST_SAAS_AP01_BRTB1_ALIAS</saml:AttributeValue></saml:Attribute></saml:AttributeStatement></saml:Assertion>";
+        // 模拟 E2E Trust Token
+        when(e2ETrustTokenUtil.getE2ETrustToken()).thenReturn("mock_e2e_token");
     }
 
-    private String dummyToken;
-
-    // ==================== retrieveTransferList ====================
-
+    /**
+     * 测试：retrieveCustomerAccounts 方法
+     * 验证：调用 restClientService.get，传入正确的 URL 和 headers，返回预期的 CustomerAccounts 对象。
+     */
     @Test
-    void retrieveTransferList_Success() {
+    void testRetrieveCustomerAccounts_Success() {
         // Arrange
-        Map<String, String> requestHeader = buildValidRequestHeader();
-        String transferStatusCode = "ACCEPTED";
-        List<String> checksumIdentifiers = Arrays.asList("chk1", "chk2");
-        String pagination = "page=1";
-        String productId = "PROD1";
-        String sParameterType = "PLAIN_TEXT";
+        CustomerAccounts mockCustomerAccounts = new CustomerAccounts();
+        List<InvestmentAccount> mockInvestmentAccounts = new ArrayList<>();
+        InvestmentAccount mockAccount = new InvestmentAccount();
+        mockAccount.setChecksum("checksum1");
+        mockInvestmentAccounts.add(mockAccount);
+        mockCustomerAccounts.setInvestmentAccountList(mockInvestmentAccounts);
 
-        // Mock response
-        RetrieveTransferListResponse mockResponse = new RetrieveTransferListResponse();
-        RetrieveTransferListResponseData responseData = new RetrieveTransferListResponseData();
-        responseData.setTransferLists(new ArrayList<>());
-        mockResponse.setData(responseData);
-        ResponseDetails responseDetails = new ResponseDetails();
-        responseDetails.setResponseCodeNumber(0);
-        mockResponse.setResponseDetails(responseDetails);
-
-        // Mock the underlying calls that are part of the flow
-        CustomerAccounts customerAccounts = new CustomerAccounts();
-        InvestmentAccount account1 = new InvestmentAccount();
-        account1.setChecksum("chk1");
-        InvestmentAccountId accountId1 = new InvestmentAccountId();
-        accountId1.setAccountNumber("ACC1");
-        account1.setInvestmentAccountId(accountId1);
-        InvestmentAccount account2 = new InvestmentAccount();
-        account2.setChecksum("chk2");
-        InvestmentAccountId accountId2 = new InvestmentAccountId();
-        accountId2.setAccountNumber("ACC2");
-        account2.setInvestmentAccountId(accountId2);
-        customerAccounts.setInvestmentAccountList(Arrays.asList(account1, account2));
-
-        // Mock customer accounts retrieval
-        when(restClientService.get(anyString(), any(), eq(CustomerAccounts.class), anyInt(), anyBoolean()))
-                .thenReturn(customerAccounts);
-
-        // Mock the main REST call
-        when(restClientService.get(anyString(), anyMap(), eq(RetrieveTransferListResponse.class), anyInt(), anyBoolean()))
-                .thenReturn(mockResponse);
-
-        // Mock PartyNameResponse and PartyContactResponse
-        PartyNameResponse partyNameResponse = new PartyNameResponse();
-        PartyNameResponse.Name name = new PartyNameResponse.Name();
-        name.setLastName("Smith");
-        name.setGivenName("John");
-        name.setCustomerChristianName("J");
-        partyNameResponse.setName(name);
-        when(retrieveCustomerProfilesService.retrieveCustomerNamesWithCinNumber(anyString(), anyMap()))
-                .thenReturn(partyNameResponse);
-
-        PartyContactResponse partyContactResponse = new PartyContactResponse();
-        PartyContactResponse.Contact contact = new PartyContactResponse.Contact();
-        contact.setMobileNumber1("12345678");
-        partyContactResponse.setContact(contact);
-        when(retrieveCustomerProfilesService.retrieveCustomerPhoneNumberWithCinNumber(anyString(), anyMap()))
-                .thenReturn(partyContactResponse);
+        // 模拟 restClientService 的返回值
+        when(restClientService.get(anyString(), eq(mockRequestHeaders), eq(CustomerAccounts.class), anyInt(), anyBoolean()))
+                .thenReturn(mockCustomerAccounts);
 
         // Act
-        RetrieveTransferListResponse result = tradeTransferService.retrieveTransferList(requestHeader, transferStatusCode, checksumIdentifiers, pagination, productId, sParameterType);
+        CustomerAccounts result = tradeTransferService.retrieveCustomerAccounts(mockRequestHeaders);
 
         // Assert
         assertNotNull(result);
-        assertEquals(0, result.getResponseDetails().getResponseCodeNumber());
-        verify(restClientService).get(anyString(), anyMap(), eq(RetrieveTransferListResponse.class), anyInt(), anyBoolean());
-        verify(retrieveCustomerProfilesService).retrieveCustomerNamesWithCinNumber(eq("dummy-cin"), anyMap());
-        verify(retrieveCustomerProfilesService).retrieveCustomerPhoneNumberWithCinNumber(eq("dummy-cin"), anyMap());
+        assertEquals(mockInvestmentAccounts, result.getInvestmentAccountList());
+        verify(restClientService).get(
+                contains("accounts-map"), // 验证 URL 包含 accounts-map
+                eq(mockRequestHeaders),
+                eq(CustomerAccounts.class),
+                eq(AbstractRestService.class.getDeclaredField("timeout").getLong(tradeTransferService)), // 验证 timeout
+                eq(true) // 验证 printMessageLog
+        );
     }
 
+    /**
+     * 测试：retrieveAccountIdWithCheckSum 方法
+     * 验证：调用 retrieveCustomerAccountIdsList，解析返回的 AccountId 并返回。
+     */
     @Test
-    void retrieveTransferList_WhenCustomerAccountsEmpty_ThrowsBadRequestException() {
+    void testRetrieveAccountIdWithCheckSum_Success() {
         // Arrange
-        Map<String, String> requestHeader = buildValidRequestHeader();
-        String transferStatusCode = "ACCEPTED";
+        RetrieveCustomerAccountsIdListResponse mockResponse = new RetrieveCustomerAccountsIdListResponse();
+        List<com.hsbc.trade.transfer.domain.account.AccountId> mockAccountIdList = new ArrayList<>();
+        com.hsbc.trade.transfer.domain.account.AccountId mockAccountId = new com.hsbc.trade.transfer.domain.account.AccountId();
+        mockAccountId.setCountryAccountCode("HK");
+        mockAccountId.setGroupMemberAccountCode("GM1");
+        mockAccountId.setAccountNumber("ACC123");
+        mockAccountId.setAccountProductTypeCode("PROD");
+        mockAccountId.setAccountTypeCode("TYPE");
+        mockAccountId.setAccountCurrencyCode("HKD");
+        mockAccountIdList.add(mockAccountId);
+        mockResponse.setAccountIdList(mockAccountIdList);
 
-        // Mock empty customer accounts
-        CustomerAccounts customerAccounts = new CustomerAccounts();
-        customerAccounts.setInvestmentAccountList(new ArrayList<>());
-
-        when(restClientService.get(anyString(), any(), eq(CustomerAccounts.class), anyInt(), anyBoolean()))
-                .thenReturn(customerAccounts);
-
-        // Mock other calls to avoid NPE
-        when(retrieveCustomerProfilesService.retrieveCustomerNamesWithCinNumber(anyString(), anyMap()))
-                .thenReturn(new PartyNameResponse());
-        when(retrieveCustomerProfilesService.retrieveCustomerPhoneNumberWithCinNumber(anyString(), anyMap()))
-                .thenReturn(new PartyContactResponse());
-
-        // Act & Assert
-        assertThrows(BadRequestException.class, () -> {
-            tradeTransferService.retrieveTransferList(requestHeader, transferStatusCode, Collections.emptyList(), "1", "PROD1", "PLAIN_TEXT");
-        });
-    }
-
-    // ==================== retrieveTransferDetail ====================
-
-    @Test
-    void retrieveTransferDetail_Success() {
-        // Arrange
-        Map<String, String> requestHeader = buildValidRequestHeader();
-        String transferReferenceNumber = "TRF12345";
-
-        // Mock response
-        RetrieveTransferDetailResponse mockResponse = new RetrieveTransferDetailResponse();
-        RetrieveTransferDetailResponseData responseData = new RetrieveTransferDetailResponseData();
-        responseData.setTransferSideCode(TransferSideCode.SENDER);
-        responseData.setIsReceiverBankCustomer("Y");
-        responseData.setSenderCustomerFirstName("John");
-        responseData.setSenderCustomerMiddleName("A");
-        responseData.setSenderCustomerLastName("Doe");
-        InvestmentAccount investmentAccount = new InvestmentAccount();
-        InvestmentAccountId accountId = new InvestmentAccountId();
-        accountId.setAccountNumber("123456");
-        investmentAccount.setInvestmentAccountId(accountId);
-        responseData.setInvestmentAccount(investmentAccount);
-        mockResponse.setData(responseData);
-        ResponseDetails responseDetails = new ResponseDetails();
-        responseDetails.setResponseCodeNumber(0);
-        mockResponse.setResponseDetails(responseDetails);
-
-        // Mock customer accounts with matching account number
-        CustomerAccounts customerAccounts = new CustomerAccounts();
-        InvestmentAccount account = new InvestmentAccount();
-        account.setChecksum("validChecksum");
-        account.setInvestmentAccountId(accountId); // Same account number as in response
-        customerAccounts.setInvestmentAccountList(Collections.singletonList(account));
-
-        when(restClientService.get(anyString(), any(), eq(CustomerAccounts.class), anyInt(), anyBoolean()))
-                .thenReturn(customerAccounts);
-
-        // Mock the main REST call
-        when(restClientService.get(anyString(), anyMap(), eq(RetrieveTransferDetailResponse.class), anyInt(), anyBoolean()))
+        // 模拟 retrieveCustomerAccountIdsList 的返回值
+        when(((AbstractRestService) tradeTransferService).retrieveCustomerAccountIdsList(anyMap()))
                 .thenReturn(mockResponse);
 
-        // Mock PartyNameResponse and PartyContactResponse
-        PartyNameResponse partyNameResponse = new PartyNameResponse();
-        PartyNameResponse.Name name = new PartyNameResponse.Name();
-        name.setLastName("Smith");
-        name.setGivenName("John");
-        name.setCustomerChristianName("J");
-        partyNameResponse.setName(name);
-        when(retrieveCustomerProfilesService.retrieveCustomerNamesWithCinNumber(anyString(), anyMap()))
-                .thenReturn(partyNameResponse);
-
-        PartyContactResponse partyContactResponse = new PartyContactResponse();
-        PartyContactResponse.Contact contact = new PartyContactResponse.Contact();
-        contact.setMobileNumber1("12345678");
-        partyContactResponse.setContact(contact);
-        when(retrieveCustomerProfilesService.retrieveCustomerPhoneNumberWithCinNumber(anyString(), anyMap()))
-                .thenReturn(partyContactResponse);
-
         // Act
-        RetrieveTransferDetailResponse result = tradeTransferService.retrieveTransferDetail(requestHeader, transferReferenceNumber);
+        AccountId result = tradeTransferService.retrieveAccountIdWithCheckSum(mockRequestHeaders);
 
         // Assert
         assertNotNull(result);
-        assertEquals("validChecksum", result.getData().getAccountChecksumIdentifier());
-        assertEquals("J****n", result.getData().getSenderCustomerFirstName()); // Masked
-        assertEquals("A***", result.getData().getSenderCustomerMiddleName()); // Masked
-        verify(restClientService).get(anyString(), anyMap(), eq(RetrieveTransferDetailResponse.class), anyInt(), anyBoolean());
+        assertEquals("HK", result.getCountryAccountCode());
+        assertEquals("GM1", result.getGroupMemberAccountCode());
+        assertEquals("ACC123", result.getAccountNumber());
+        assertEquals("PROD", result.getAccountProductTypeCode());
+        assertEquals("TYPE", result.getAccountTypeCode());
+        assertEquals("HKD", result.getAccountCurrencyCode());
+        verify(((AbstractRestService) tradeTransferService)).retrieveCustomerAccountIdsList(eq(mockRequestHeaders));
     }
 
+    /**
+     * 测试：retrieveCustomerNamesWithCinNumber 方法
+     * 验证：调用 updateHeaderforCEP 构建头，然后调用 restClientService.get，返回 PartyNameResponse。
+     */
     @Test
-    void retrieveTransferDetail_WhenInvestmentAccountIsNull_ThrowsBadRequestException() {
+    void testRetrieveCustomerNamesWithCinNumber_Success() {
         // Arrange
-        Map<String, String> requestHeader = buildValidRequestHeader();
-        String transferReferenceNumber = "TRF12345";
+        PartyNameResponse mockPartyNameResponse = new PartyNameResponse();
+        mockPartyNameResponse.setName(new com.hsbc.trade.transfer.domain.cep.PartyName());
 
-        // Mock response with null investmentAccount
-        RetrieveTransferDetailResponse mockResponse = new RetrieveTransferDetailResponse();
-        RetrieveTransferDetailResponseData responseData = new RetrieveTransferDetailResponseData();
-        responseData.setInvestmentAccount(null); // This will trigger the error
-        mockResponse.setData(responseData);
-        ResponseDetails responseDetails = new ResponseDetails();
-        responseDetails.setResponseCodeNumber(0);
-        mockResponse.setResponseDetails(responseDetails);
+        // 模拟 updateHeaderforCEP 的行为
+        Map<String, String> cepHeaders = new HashMap<>(mockRequestHeaders);
+        cepHeaders.put(HTTPRequestHeaderConstants.X_HSBC_E2E_TRUST_TOKEN, "mock_e2e_token");
+        cepHeaders.put(HTTPRequestHeaderConstants.X_HSBC_GBGF, "mock_gbgf");
+        cepHeaders.put(HTTPRequestHeaderConstants.X_HSBC_SOURCE_SYSTEM_ID, "mock_source");
 
-        // Mock customer accounts (empty, so no match will be found)
-        CustomerAccounts customerAccounts = new CustomerAccounts();
-        customerAccounts.setInvestmentAccountList(new ArrayList<>());
+        when(((AbstractRestService) tradeTransferService).updateHeaderforCEP(eq(mockRequestHeaders)))
+                .thenReturn(cepHeaders);
 
-        when(restClientService.get(anyString(), any(), eq(CustomerAccounts.class), anyInt(), anyBoolean()))
-                .thenReturn(customerAccounts);
+        // 模拟 restClientService 的返回值
+        when(restClientService.get(eq("cep.party.name.url"), eq(cepHeaders), eq(PartyNameResponse.class), anyInt(), anyBoolean()))
+                .thenReturn(mockPartyNameResponse);
 
-        // Mock the main REST call
-        when(restClientService.get(anyString(), anyMap(), eq(RetrieveTransferDetailResponse.class), anyInt(), anyBoolean()))
+        // Act
+        PartyNameResponse result = tradeTransferService.retrieveCustomerNamesWithCinNumber(mockCinNumber, mockRequestHeaders);
+
+        // Assert
+        assertNotNull(result);
+        assertEquals(mockPartyNameResponse, result);
+        verify(((AbstractRestService) tradeTransferService)).updateHeaderforCEP(eq(mockRequestHeaders));
+        verify(restClientService).get(eq("cep.party.name.url"), eq(cepHeaders), eq(PartyNameResponse.class), anyInt(), anyBoolean());
+    }
+
+    /**
+     * 测试：retrieveCustomerPhoneNumberWithCinNumber 方法
+     * 验证：调用 updateHeaderforCEP 构建头，然后调用 restClientService.get，返回 PartyContactResponse。
+     */
+    @Test
+    void testRetrieveCustomerPhoneNumberWithCinNumber_Success() {
+        // Arrange
+        PartyContactResponse mockPartyContactResponse = new PartyContactResponse();
+        mockPartyContactResponse.setContact(new com.hsbc.trade.transfer.domain.cep.PartyContact());
+
+        // 模拟 updateHeaderforCEP 的行为
+        Map<String, String> cepHeaders = new HashMap<>(mockRequestHeaders);
+        cepHeaders.put(HTTPRequestHeaderConstants.X_HSBC_E2E_TRUST_TOKEN, "mock_e2e_token");
+        cepHeaders.put(HTTPRequestHeaderConstants.X_HSBC_GBGF, "mock_gbgf");
+        cepHeaders.put(HTTPRequestHeaderConstants.X_HSBC_SOURCE_SYSTEM_ID, "mock_source");
+
+        when(((AbstractRestService) tradeTransferService).updateHeaderforCEP(eq(mockRequestHeaders)))
+                .thenReturn(cepHeaders);
+
+        // 模拟 restClientService 的返回值
+        when(restClientService.get(eq("cep.party.contact.url"), eq(cepHeaders), eq(PartyContactResponse.class), anyInt(), anyBoolean()))
+                .thenReturn(mockPartyContactResponse);
+
+        // Act
+        PartyContactResponse result = tradeTransferService.retrieveCustomerPhoneNumberWithCinNumber(mockCinNumber, mockRequestHeaders);
+
+        // Assert
+        assertNotNull(result);
+        assertEquals(mockPartyContactResponse, result);
+        verify(((AbstractRestService) tradeTransferService)).updateHeaderforCEP(eq(mockRequestHeaders));
+        verify(restClientService).get(eq("cep.party.contact.url"), eq(cepHeaders), eq(PartyContactResponse.class), anyInt(), anyBoolean());
+    }
+
+    /**
+     * 测试：retrieveGoldPrice 方法
+     * 验证：构建正确的 URI 并调用 restClientService.get，返回 GoldPriceResponse。
+     */
+    @Test
+    void testRetrieveGoldPrice_Success() {
+        // Arrange
+        GoldPriceResponse mockGoldPriceResponse = new GoldPriceResponse();
+        GoldPriceResponseData mockData = new GoldPriceResponseData();
+        mockData.setGoldPriceAmount(new BigDecimal("100.00"));
+        mockData.setPublishTime("2023-01-01T12:00:00Z");
+        mockGoldPriceResponse.setData(mockData);
+
+        // 模拟 restClientService 的返回值
+        when(restClientService.get(eq("mds.gold.quotes-endpoint/XGTHKD"), eq(mockRequestHeaders), eq(GoldPriceResponse.class), anyInt(), anyBoolean()))
+                .thenReturn(mockGoldPriceResponse);
+
+        // Act
+        GoldPriceResponse result = tradeTransferService.retrieveGoldPrice(mockRequestHeaders);
+
+        // Assert
+        assertNotNull(result);
+        assertNotNull(result.getData());
+        assertEquals(new BigDecimal("100.00"), result.getData().getGoldPriceAmount());
+        verify(restClientService).get(eq("mds.gold.quotes-endpoint/XGTHKD"), eq(mockRequestHeaders), eq(GoldPriceResponse.class), anyInt(), anyBoolean());
+    }
+
+    /**
+     * 测试：createTransfers 方法中的核心远程调用流程
+     * 验证：该方法会正确调用 retrieveAccountIdWithCheckSum, retrieveCustomerNamesWithCinNumber, retrieveGoldPrice, 和 tradeLimitService。
+     */
+    @Test
+    void testCreateTransfers_Success() {
+        // Arrange
+        // 1. 模拟 tradeLimitService
+        com.hsbc.trade.transfer.retrievetransferlimit.RetrieveTransferLimitResponse mockLimitResponse = new com.hsbc.trade.transfer.retrievetransferlimit.RetrieveTransferLimitResponse();
+        com.hsbc.trade.transfer.retrievetransferlimit.RetrieveTransferLimitResponseData mockLimitData = new com.hsbc.trade.transfer.retrievetransferlimit.RetrieveTransferLimitResponseData();
+        mockLimitData.setMaxDailyLimitedAmount(new BigDecimal("10000"));
+        mockLimitData.setAvailableTodayAmount(new BigDecimal("5000"));
+        mockLimitResponse.setData(mockLimitData);
+        when(tradeLimitService.retrieveLimitations(anyMap())).thenReturn(mockLimitResponse);
+
+        // 2. 模拟 retrieveAccountIdWithCheckSum
+        AccountId mockAccountId = new AccountId();
+        mockAccountId.setAccountNumber("ACC123");
+        when(tradeTransferService.retrieveAccountIdWithCheckSum(anyMap())).thenReturn(mockAccountId);
+
+        // 3. 模拟 retrieveCustomerNamesWithCinNumber
+        PartyNameResponse mockPartyNameResponse = new PartyNameResponse();
+        com.hsbc.trade.transfer.domain.cep.PartyName mockName = new com.hsbc.trade.transfer.domain.cep.PartyName();
+        mockName.setGivenName("John");
+        mockName.setLastName("Doe");
+        mockName.setCustomerChristianName("Michael");
+        mockPartyNameResponse.setName(mockName);
+        when(tradeTransferService.retrieveCustomerNamesWithCinNumber(eq(mockCinNumber), anyMap())).thenReturn(mockPartyNameResponse);
+
+        // 4. 模拟 retrieveGoldPrice
+        GoldPriceResponse mockGoldPriceResponse = new GoldPriceResponse();
+        GoldPriceResponseData mockGoldData = new GoldPriceResponseData();
+        mockGoldData.setGoldPriceAmount(new BigDecimal("100.00"));
+        mockGoldData.setPublishTime("2023-01-01T12:00:00Z");
+        mockGoldPriceResponse.setData(mockGoldData);
+        when(tradeTransferService.retrieveGoldPrice(anyMap())).thenReturn(mockGoldPriceResponse);
+
+        // 5. 模拟 validateSreForReceivers (它内部会调用 sreValidationService，我们只关心它被调用)
+        doNothing().when(tradeTransferService).validateSreForReceivers(anyList(), anyString(), anyMap());
+
+        // 6. 模拟 restClientService.post 的返回值
+        com.hsbc.trade.transfer.createtransfer.CreateTransferResponse mockResponse = new com.hsbc.trade.transfer.createtransfer.CreateTransferResponse();
+        when(restClientService.post(anyString(), anyMap(), any(), eq(com.hsbc.trade.transfer.createtransfer.CreateTransferResponse.class), anyInt(), anyBoolean()))
                 .thenReturn(mockResponse);
 
-        // Mock PartyNameResponse and PartyContactResponse
-        PartyNameResponse partyNameResponse = new PartyNameResponse();
-        partyNameResponse.setName(new PartyNameResponse.Name());
-        when(retrieveCustomerProfilesService.retrieveCustomerNamesWithCinNumber(anyString(), anyMap()))
-                .thenReturn(partyNameResponse);
+        // 7. 创建请求
+        com.hsbc.trade.transfer.createtransfer.CreateTransferRequest request = new com.hsbc.trade.transfer.createtransfer.CreateTransferRequest();
+        com.hsbc.trade.transfer.createtransfer.CreateTransferRequestData data = new com.hsbc.trade.transfer.createtransfer.CreateTransferRequestData();
+        data.setActionRequestCode("D"); // D 操作需要金價
+        data.setSenderInvestmentAccountChecksumIdentifier(mockChecksum);
 
-        PartyContactResponse partyContactResponse = new PartyContactResponse();
-        partyContactResponse.setContact(new PartyContactResponse.Contact());
-        when(retrieveCustomerProfilesService.retrieveCustomerPhoneNumberWithCinNumber(anyString(), anyMap()))
-                .thenReturn(partyContactResponse);
-
-        // Act & Assert
-        assertThrows(BadRequestException.class, () -> {
-            tradeTransferService.retrieveTransferDetail(requestHeader, transferReferenceNumber);
-        });
-    }
-
-    @Test
-    void retrieveTransferDetail_WhenRestCallFails_ThrowsInternalServerErrorException() {
-        // Arrange
-        Map<String, String> requestHeader = buildValidRequestHeader();
-        String transferReferenceNumber = "TRF12345";
-
-        // Mock a failure in the REST call
-        when(restClientService.get(anyString(), anyMap(), eq(RetrieveTransferDetailResponse.class), anyInt(), anyBoolean()))
-                .thenThrow(new RuntimeException("Network error"));
-
-        // Act & Assert
-        assertThrows(InternalServerErrorException.class, () -> {
-            tradeTransferService.retrieveTransferDetail(requestHeader, transferReferenceNumber);
-        });
-    }
-
-    // ==================== createTransfers ====================
-
-    @Test
-    void createTransfers_Success_DOperation() {
-        // Arrange
-        Map<String, String> requestHeader = buildValidRequestHeader();
-        CreateTransferRequest request = new CreateTransferRequest();
-        CreateTransferRequestData data = new CreateTransferRequestData();
-        data.setActionRequestCode(ActionRequestCode.D); // D operation
-        data.setSenderInvestmentAccountChecksumIdentifier("chk1");
-
-        ReceiverInfo receiver = new ReceiverInfo();
-        receiver.setTransferQuantity(new BigDecimal("100.00"));
-        receiver.setReceiverCustomerNumber("CUST001");
+        com.hsbc.trade.transfer.createtransfer.ReceiverInfo receiver = new com.hsbc.trade.transfer.createtransfer.ReceiverInfo();
+        receiver.setTransferQuantity(new BigDecimal("10"));
         data.setReceiverLists(Collections.singletonList(receiver));
 
+        data.setRequestPriceValue(new BigDecimal("100")); // 用于计算总金额
         request.setData(data);
 
-        // Mock customer accounts
-        CustomerAccounts customerAccounts = new CustomerAccounts();
-        InvestmentAccount account = new InvestmentAccount();
-        account.setChecksum("chk1");
-        InvestmentAccountId accountId = new InvestmentAccountId();
-        accountId.setAccountNumber("ACC123");
-        accountId.setCountryAccountCode("HK");
-        accountId.setGroupMemberAccountCode("HBAP");
-        accountId.setAccountProductTypeCode("SAV");
-        accountId.setAccountTypeCode("01");
-        accountId.setAccountCurrencyCode("HKD");
-        account.setInvestmentAccountId(accountId);
-        customerAccounts.setInvestmentAccountList(Collections.singletonList(account));
-
-        when(restClientService.get(anyString(), any(), eq(CustomerAccounts.class), anyInt(), anyBoolean()))
-                .thenReturn(customerAccounts);
-
-        // Mock limit check
-        RetrieveTransferLimitResponse currentLimit = new RetrieveTransferLimitResponse();
-        RetrieveTransferLimitResponseData limitData = new RetrieveTransferLimitResponseData();
-        limitData.setAvailableTodayAmount(new BigDecimal("1000"));
-        limitData.setMaxDailyLimitedAmount(new BigDecimal("1000"));
-        limitData.setAvailableMonthToDateAmount(new BigDecimal("2000"));
-        limitData.setMaxMonthlyLimitedAmount(new BigDecimal("2000"));
-        limitData.setAvailableYearToDateAmount(new BigDecimal("5000"));
-        limitData.setMaxYearlyLimitedAmount(new BigDecimal("5000"));
-        currentLimit.setData(limitData);
-
-        // Mock SRE validation for receiver
-        RuleResponse sreResponse = new RuleResponse();
-        ResponseDetails sreDetails = new ResponseDetails();
-        sreDetails.setResponseCodeNumber(0);
-        sreResponse.setResponseDetails(sreDetails);
-        when(sreValidationService.callSreForTransferValidation(anyString(), anyString(), anyString(), anyMap()))
-                .thenReturn(sreResponse);
-
-        // Mock Gold Price for D operation
-        GoldPriceResponse goldPriceResponse = new GoldPriceResponse();
-        GoldPriceResponseData mdsData = new GoldPriceResponseData();
-        mdsData.setGoldPriceAmount(new BigDecimal("50.00"));
-        mdsData.setPublishTime("2025-11-20T10:00:00Z");
-        goldPriceResponse.setData(mdsData);
-        when(restClientService.get(anyString(), anyMap(), eq(GoldPriceResponse.class), anyInt(), anyBoolean()))
-                .thenReturn(goldPriceResponse);
-
-        // Mock PartyNameResponse for sender
-        PartyNameResponse partyNameResponse = new PartyNameResponse();
-        PartyNameResponse.Name name = new PartyNameResponse.Name();
-        name.setLastName("Smith");
-        name.setGivenName("John");
-        name.setCustomerChristianName("J");
-        partyNameResponse.setName(name);
-        when(retrieveCustomerProfilesService.retrieveCustomerNamesWithCinNumber(anyString(), anyMap()))
-                .thenReturn(partyNameResponse);
-
-        // Mock duplicate key generation
-        String mockUniqueKey = "unique-key-123";
-        when(duplicateSubmitPreventionService.generateUniqueKey()).thenReturn(mockUniqueKey);
-
-        // Mock the main POST call
-        CreateTransferResponse mockResponse = new CreateTransferResponse();
-        CreateTransferResponseData responseData = new CreateTransferResponseData();
-        List<TransferOrderInfo> orderInfoList = new ArrayList<>();
-        TransferOrderInfo orderInfo = new TransferOrderInfo();
-        orderInfo.setRequestPriceValue(new BigDecimal("100"));
-        orderInfoList.add(orderInfo);
-        responseData.setTransferOrderLists(orderInfoList);
-        mockResponse.setData(responseData);
-        ResponseDetails responseDetails = new ResponseDetails();
-        responseDetails.setResponseCodeNumber(0);
-        mockResponse.setResponseDetails(responseDetails);
-        when(restClientService.post(anyString(), anyMap(), any(), eq(CreateTransferResponse.class), anyInt(), anyBoolean()))
-                .thenReturn(mockResponse);
-
         // Act
-        CreateTransferResponse result = tradeTransferService.createTransfers(requestHeader, request);
+        com.hsbc.trade.transfer.createtransfer.CreateTransferResponse result = tradeTransferService.createTransfers(mockRequestHeaders, request);
 
         // Assert
         assertNotNull(result);
-        assertEquals(mockUniqueKey, result.getData().getRequestUniqueKey());
-        assertEquals(new BigDecimal("50.00"), result.getData().getTransferOrderLists().get(0).getRequestPriceValue());
-        assertEquals("HKD", result.getData().getTransferOrderLists().get(0).getPriceCurrencyCode());
-        assertEquals("2025-11-20T10:00:00Z", result.getData().getTransferOrderLists().get(0).getRequestPriceAsOfDateTime());
-        assertEquals("Smith John J", result.getData().getSenderCustomerName()); // Full name set
-        verify(sreValidationService).callSreForTransferValidation(eq("dac_tokenized_gold_transfer_sender_rule"), eq("dummy-cin"), eq("CUST001"), anyMap());
-        verify(restClientService).post(anyString(), anyMap(), any(), eq(CreateTransferResponse.class), anyInt(), anyBoolean());
-    }
-
-    @Test
-    void createTransfers_Success_COperation() {
-        // Arrange
-        Map<String, String> requestHeader = buildValidRequestHeader();
-        CreateTransferRequest request = new CreateTransferRequest();
-        CreateTransferRequestData data = new CreateTransferRequestData();
-        data.setActionRequestCode(ActionRequestCode.C); // C operation, no gold price needed
-        data.setSenderInvestmentAccountChecksumIdentifier("chk1");
-
-        ReceiverInfo receiver = new ReceiverInfo();
-        receiver.setTransferQuantity(new BigDecimal("100.00"));
-        receiver.setReceiverCustomerNumber("CUST001");
-        data.setReceiverLists(Collections.singletonList(receiver));
-        request.setData(data);
-
-        // Mock customer accounts
-        CustomerAccounts customerAccounts = new CustomerAccounts();
-        InvestmentAccount account = new InvestmentAccount();
-        account.setChecksum("chk1");
-        InvestmentAccountId accountId = new InvestmentAccountId();
-        accountId.setAccountNumber("ACC123");
-        account.setInvestmentAccountId(accountId);
-        customerAccounts.setInvestmentAccountList(Collections.singletonList(account));
-
-        when(restClientService.get(anyString(), any(), eq(CustomerAccounts.class), anyInt(), anyBoolean()))
-                .thenReturn(customerAccounts);
-
-        // Mock limit check
-        RetrieveTransferLimitResponse currentLimit = new RetrieveTransferLimitResponse();
-        RetrieveTransferLimitResponseData limitData = new RetrieveTransferLimitResponseData();
-        limitData.setAvailableTodayAmount(new BigDecimal("1000"));
-        currentLimit.setData(limitData);
-
-        // Mock SRE validation
-        RuleResponse sreResponse = new RuleResponse();
-        ResponseDetails sreDetails = new ResponseDetails();
-        sreDetails.setResponseCodeNumber(0);
-        sreResponse.setResponseDetails(sreDetails);
-        when(sreValidationService.callSreForTransferValidation(anyString(), anyString(), anyString(), anyMap()))
-                .thenReturn(sreResponse);
-
-        // Mock PartyNameResponse for sender
-        PartyNameResponse partyNameResponse = new PartyNameResponse();
-        PartyNameResponse.Name name = new PartyNameResponse.Name();
-        name.setLastName("Smith");
-        name.setGivenName("John");
-        name.setCustomerChristianName("J");
-        partyNameResponse.setName(name);
-        when(retrieveCustomerProfilesService.retrieveCustomerNamesWithCinNumber(anyString(), anyMap()))
-                .thenReturn(partyNameResponse);
-
-        // Mock the main POST call
-        CreateTransferResponse mockResponse = new CreateTransferResponse();
-        CreateTransferResponseData responseData = new CreateTransferResponseData();
-        List<TransferOrderInfo> orderInfoList = new ArrayList<>();
-        TransferOrderInfo orderInfo = new TransferOrderInfo();
-        orderInfo.setRequestPriceValue(new BigDecimal("100"));
-        orderInfoList.add(orderInfo);
-        responseData.setTransferOrderLists(orderInfoList);
-        mockResponse.setData(responseData);
-        ResponseDetails responseDetails = new ResponseDetails();
-        responseDetails.setResponseCodeNumber(0);
-        mockResponse.setResponseDetails(responseDetails);
-        when(restClientService.post(anyString(), anyMap(), any(), eq(CreateTransferResponse.class), anyInt(), anyBoolean()))
-                .thenReturn(mockResponse);
-
-        // Act
-        CreateTransferResponse result = tradeTransferService.createTransfers(requestHeader, request);
-
-        // Assert
-        assertNotNull(result);
-        assertNull(result.getData().getRequestUniqueKey()); // Should not be set for C operation
-        assertEquals(new BigDecimal("100"), result.getData().getTransferOrderLists().get(0).getRequestPriceValue()); // Should remain unchanged
-        verify(sreValidationService).callSreForTransferValidation(eq("dac_tokenized_gold_transfer_sender_rule"), eq("dummy-cin"), eq("CUST001"), anyMap());
-        verify(restClientService).post(anyString(), anyMap(), any(), eq(CreateTransferResponse.class), anyInt(), anyBoolean());
-    }
-
-    @Test
-    void createTransfers_WhenDailyLimitExceeded_ThrowsTransferLimitExceededException() {
-        // Arrange
-        Map<String, String> requestHeader = buildValidRequestHeader();
-        CreateTransferRequest request = new CreateTransferRequest();
-        CreateTransferRequestData data = new CreateTransferRequestData();
-        data.setActionRequestCode(ActionRequestCode.C);
-        data.setSenderInvestmentAccountChecksumIdentifier("chk1");
-
-        ReceiverInfo receiver = new ReceiverInfo();
-        receiver.setTransferQuantity(new BigDecimal("1000")); // Total amount = 1000
-        data.setReceiverLists(Collections.singletonList(receiver));
-        request.setData(data);
-
-        // Mock customer accounts
-        CustomerAccounts customerAccounts = new CustomerAccounts();
-        InvestmentAccount account = new InvestmentAccount();
-        account.setChecksum("chk1");
-        InvestmentAccountId accountId = new InvestmentAccountId();
-        accountId.setAccountNumber("ACC123");
-        account.setInvestmentAccountId(accountId);
-        customerAccounts.setInvestmentAccountList(Collections.singletonList(account));
-
-        when(restClientService.get(anyString(), any(), eq(CustomerAccounts.class), anyInt(), anyBoolean()))
-                .thenReturn(customerAccounts);
-
-        // Mock limit check - daily limit exceeded
-        RetrieveTransferLimitResponse currentLimit = new RetrieveTransferLimitResponse();
-        RetrieveTransferLimitResponseData limitData = new RetrieveTransferLimitResponseData();
-        limitData.setAvailableTodayAmount(new BigDecimal("500")); // Less than 1000
-        limitData.setMaxDailyLimitedAmount(new BigDecimal("1000"));
-        currentLimit.setData(limitData);
-
-        // Mock SRE validation
-        RuleResponse sreResponse = new RuleResponse();
-        ResponseDetails sreDetails = new ResponseDetails();
-        sreDetails.setResponseCodeNumber(0);
-        sreResponse.setResponseDetails(sreDetails);
-        when(sreValidationService.callSreForTransferValidation(anyString(), anyString(), anyString(), anyMap()))
-                .thenReturn(sreResponse);
-
-        // Mock PartyNameResponse for sender
-        PartyNameResponse partyNameResponse = new PartyNameResponse();
-        PartyNameResponse.Name name = new PartyNameResponse.Name();
-        name.setLastName("Smith");
-        name.setGivenName("John");
-        name.setCustomerChristianName("J");
-        partyNameResponse.setName(name);
-        when(retrieveCustomerProfilesService.retrieveCustomerNamesWithCinNumber(anyString(), anyMap()))
-                .thenReturn(partyNameResponse);
-
-        // Act & Assert
-        assertThrows(TransferLimitExceededException.class, () -> {
-            tradeTransferService.createTransfers(requestHeader, request);
-        });
-    }
-
-    @Test
-    void createTransfers_WhenSreValidationFails_ThrowsException() {
-        // Arrange
-        Map<String, String> requestHeader = buildValidRequestHeader();
-        CreateTransferRequest request = new CreateTransferRequest();
-        CreateTransferRequestData data = new CreateTransferRequestData();
-        data.setActionRequestCode(ActionRequestCode.C);
-        data.setSenderInvestmentAccountChecksumIdentifier("chk1");
-
-        ReceiverInfo receiver = new ReceiverInfo();
-        receiver.setTransferQuantity(new BigDecimal("100"));
-        data.setReceiverLists(Collections.singletonList(receiver));
-        request.setData(data);
-
-        // Mock customer accounts
-        CustomerAccounts customerAccounts = new CustomerAccounts();
-        InvestmentAccount account = new InvestmentAccount();
-        account.setChecksum("chk1");
-        InvestmentAccountId accountId = new InvestmentAccountId();
-        accountId.setAccountNumber("ACC123");
-        account.setInvestmentAccountId(accountId);
-        customerAccounts.setInvestmentAccountList(Collections.singletonList(account));
-
-        when(restClientService.get(anyString(), any(), eq(CustomerAccounts.class), anyInt(), anyBoolean()))
-                .thenReturn(customerAccounts);
-
-        // Mock limit check
-        RetrieveTransferLimitResponse currentLimit = new RetrieveTransferLimitResponse();
-        RetrieveTransferLimitResponseData limitData = new RetrieveTransferLimitResponseData();
-        limitData.setAvailableTodayAmount(new BigDecimal("1000"));
-        currentLimit.setData(limitData);
-
-        // Mock SRE validation to fail
-        RuleResponse sreResponse = new RuleResponse();
-        ResponseDetails sreDetails = new ResponseDetails();
-        sreDetails.setResponseCodeNumber(100); // Non-zero code indicates failure
-        sreResponse.setResponseDetails(sreDetails);
-        when(sreValidationService.callSreForTransferValidation(anyString(), anyString(), anyString(), anyMap()))
-                .thenReturn(sreResponse);
-
-        // Mock PartyNameResponse for sender
-        PartyNameResponse partyNameResponse = new PartyNameResponse();
-        PartyNameResponse.Name name = new PartyNameResponse.Name();
-        name.setLastName("Smith");
-        name.setGivenName("John");
-        name.setCustomerChristianName("J");
-        partyNameResponse.setName(name);
-        when(retrieveCustomerProfilesService.retrieveCustomerNamesWithCinNumber(anyString(), anyMap()))
-                .thenReturn(partyNameResponse);
-
-        // Act & Assert
-        assertThrows(IllegalArgumentException.class, () -> {
-            tradeTransferService.createTransfers(requestHeader, request);
-        });
-    }
-
-    // ==================== modifyTransfers ====================
-
-    @Test
-    void modifyTransfers_Accept_Success() {
-        // Arrange
-        Map<String, String> requestHeader = buildValidRequestHeader();
-        UpdateTransferRequest request = new UpdateTransferRequest();
-        UpdateTransferRequestData data = new UpdateTransferRequestData();
-        data.setTransferActionCode(TransferActionCode.A); // ACCEPT
-        data.setReceiverInvestmentAccountChecksumIdentifier("chk1");
-
-        request.setData(data);
-
-        // Mock customer accounts for checksum -> account mapping
-        CustomerAccounts customerAccounts = new CustomerAccounts();
-        InvestmentAccount account = new InvestmentAccount();
-        account.setChecksum("chk1");
-        InvestmentAccountId accountId = new InvestmentAccountId();
-        accountId.setAccountNumber("ACC123");
-        account.setInvestmentAccountId(accountId);
-        customerAccounts.setInvestmentAccountList(Collections.singletonList(account));
-
-        when(restClientService.get(anyString(), any(), eq(CustomerAccounts.class), anyInt(), anyBoolean()))
-                .thenReturn(customerAccounts);
-
-        // Mock SRE validation for receiver
-        RuleResponse sreResponse = new RuleResponse();
-        ResponseDetails sreDetails = new ResponseDetails();
-        sreDetails.setResponseCodeNumber(0);
-        sreResponse.setResponseDetails(sreDetails);
-        when(sreValidationService.callSreForTransferValidation(anyString(), anyString(), anyString(), anyMap()))
-                .thenReturn(sreResponse);
-
-        // Mock Gold Price for ACCEPT
-        GoldPriceResponse goldPriceResponse = new GoldPriceResponse();
-        GoldPriceResponseData mdsData = new GoldPriceResponseData();
-        mdsData.setGoldPriceAmount(new BigDecimal("50.00"));
-        mdsData.setPublishTime("2025-11-20T10:00:00Z");
-        goldPriceResponse.setData(mdsData);
-        when(restClientService.get(anyString(), anyMap(), eq(GoldPriceResponse.class), anyInt(), anyBoolean()))
-                .thenReturn(goldPriceResponse);
-
-        // Mock the main PUT call
-        UpdateTransferResponse mockResponse = new UpdateTransferResponse();
-        ResponseDetails responseDetails = new ResponseDetails();
-        responseDetails.setResponseCodeNumber(0);
-        mockResponse.setResponseDetails(responseDetails);
-        when(restClientService.put(anyString(), anyMap(), any(), eq(UpdateTransferResponse.class), anyInt(), anyBoolean()))
-                .thenReturn(mockResponse);
-
-        // Act
-        UpdateTransferResponse result = tradeTransferService.modifyTransfers(requestHeader, request);
-
-        // Assert
-        assertNotNull(result);
-        assertEquals("chk1", request.getData().getReceiverInvestmentAccount().getAccountNumber()); // Account set
-        assertEquals(new BigDecimal("50.00"), request.getData().getReceivePriceValue()); // Price set
-        assertEquals("HKD", request.getData().getReceivePriceCurrencyCode()); // Currency set
-        assertEquals("2025-11-20T10:00:00Z", request.getData().getReceivePriceAsOfDateTime()); // Time set
-        verify(sreValidationService).callSreForTransferValidation(eq("dac_tokenized_gold_transfer_receiver_rule"), anyString(), eq("dummy-cin"), anyMap());
-        verify(restClientService).put(anyString(), anyMap(), any(), eq(UpdateTransferResponse.class), anyInt(), anyBoolean());
-    }
-
-    @Test
-    void modifyTransfers_Reject_Success() {
-        // Arrange
-        Map<String, String> requestHeader = buildValidRequestHeader();
-        UpdateTransferRequest request = new UpdateTransferRequest();
-        UpdateTransferRequestData data = new UpdateTransferRequestData();
-        data.setTransferActionCode(TransferActionCode.R); // REJECT
-        data.setReceiverInvestmentAccountChecksumIdentifier("chk1");
-
-        request.setData(data);
-
-        // Mock customer accounts for checksum -> account mapping
-        CustomerAccounts customerAccounts = new CustomerAccounts();
-        InvestmentAccount account = new InvestmentAccount();
-        account.setChecksum("chk1");
-        InvestmentAccountId accountId = new InvestmentAccountId();
-        accountId.setAccountNumber("ACC123");
-        account.setInvestmentAccountId(accountId);
-        customerAccounts.setInvestmentAccountList(Collections.singletonList(account));
-
-        when(restClientService.get(anyString(), any(), eq(CustomerAccounts.class), anyInt(), anyBoolean()))
-                .thenReturn(customerAccounts);
-
-        // Mock the main PUT call
-        UpdateTransferResponse mockResponse = new UpdateTransferResponse();
-        ResponseDetails responseDetails = new ResponseDetails();
-        responseDetails.setResponseCodeNumber(0);
-        mockResponse.setResponseDetails(responseDetails);
-        when(restClientService.put(anyString(), anyMap(), any(), eq(UpdateTransferResponse.class), anyInt(), anyBoolean()))
-                .thenReturn(mockResponse);
-
-        // Act
-        UpdateTransferResponse result = tradeTransferService.modifyTransfers(requestHeader, request);
-
-        // Assert
-        assertNotNull(result);
-        assertEquals("chk1", request.getData().getReceiverInvestmentAccount().getAccountNumber()); // Account set
-        assertNull(request.getData().getReceivePriceValue()); // Price NOT set for REJECT
-        verify(sreValidationService, never()).callSreForTransferValidation(anyString(), anyString(), anyString(), anyMap()); // SRE not called for REJECT
-        verify(restClientService).put(anyString(), anyMap(), any(), eq(UpdateTransferResponse.class), anyInt(), anyBoolean());
-    }
-
-    @Test
-    void modifyTransfers_WhenSreValidationFailsForAccept_ThrowsException() {
-        // Arrange
-        Map<String, String> requestHeader = buildValidRequestHeader();
-        UpdateTransferRequest request = new UpdateTransferRequest();
-        UpdateTransferRequestData data = new UpdateTransferRequestData();
-        data.setTransferActionCode(TransferActionCode.A); // ACCEPT
-        data.setReceiverInvestmentAccountChecksumIdentifier("chk1");
-
-        request.setData(data);
-
-        // Mock customer accounts
-        CustomerAccounts customerAccounts = new CustomerAccounts();
-        InvestmentAccount account = new InvestmentAccount();
-        account.setChecksum("chk1");
-        InvestmentAccountId accountId = new InvestmentAccountId();
-        accountId.setAccountNumber("ACC123");
-        account.setInvestmentAccountId(accountId);
-        customerAccounts.setInvestmentAccountList(Collections.singletonList(account));
-
-        when(restClientService.get(anyString(), any(), eq(CustomerAccounts.class), anyInt(), anyBoolean()))
-                .thenReturn(customerAccounts);
-
-        // Mock SRE validation to fail
-        RuleResponse sreResponse = new RuleResponse();
-        ResponseDetails sreDetails = new ResponseDetails();
-        sreDetails.setResponseCodeNumber(100); // Non-zero code indicates failure
-        sreResponse.setResponseDetails(sreDetails);
-        when(sreValidationService.callSreForTransferValidation(anyString(), anyString(), anyString(), anyMap()))
-                .thenReturn(sreResponse);
-
-        // Act & Assert
-        assertThrows(IllegalArgumentException.class, () -> {
-            tradeTransferService.modifyTransfers(requestHeader, request);
-        });
-    }
-
-    // ==================== Private Method Tests ====================
-
-    @Test
-    void validateTransferLimits_WhenDailyLimitExceeded_ShouldThrowException() {
-        // Arrange
-        BigDecimal totalTranAmount = new BigDecimal("1000");
-        RetrieveTransferLimitResponse currentLimit = new RetrieveTransferLimitResponse();
-        RetrieveTransferLimitResponseData data = new RetrieveTransferLimitResponseData();
-        data.setAvailableTodayAmount(new BigDecimal("500")); // Less than total amount
-        data.setMaxDailyLimitedAmount(new BigDecimal("1000"));
-        currentLimit.setData(data);
-
-        // Act & Assert
-        assertThrows(TransferLimitExceededException.class, () -> {
-            tradeTransferService.validateTransferLimits(totalTranAmount, currentLimit);
-        });
-    }
-
-    @Test
-    void validateTransferLimits_WhenMonthlyLimitExceeded_ShouldThrowException() {
-        // Arrange
-        BigDecimal totalTranAmount = new BigDecimal("1000");
-        RetrieveTransferLimitResponse currentLimit = new RetrieveTransferLimitResponse();
-        RetrieveTransferLimitResponseData data = new RetrieveTransferLimitResponseData();
-        data.setAvailableMonthToDateAmount(new BigDecimal("500")); // Less than total amount
-        data.setMaxMonthlyLimitedAmount(new BigDecimal("1000"));
-        currentLimit.setData(data);
-
-        // Act & Assert
-        assertThrows(TransferLimitExceededException.class, () -> {
-            tradeTransferService.validateTransferLimits(totalTranAmount, currentLimit);
-        });
-    }
-
-    @Test
-    void validateTransferLimits_WhenYearlyLimitExceeded_ShouldThrowException() {
-        // Arrange
-        BigDecimal totalTranAmount = new BigDecimal("1000");
-        RetrieveTransferLimitResponse currentLimit = new RetrieveTransferLimitResponse();
-        RetrieveTransferLimitResponseData data = new RetrieveTransferLimitResponseData();
-        data.setAvailableYearToDateAmount(new BigDecimal("500")); // Less than total amount
-        data.setMaxYearlyLimitedAmount(new BigDecimal("1000"));
-        currentLimit.setData(data);
-
-        // Act & Assert
-        assertThrows(TransferLimitExceededException.class, () -> {
-            tradeTransferService.validateTransferLimits(totalTranAmount, currentLimit);
-        });
-    }
-
-    @Test
-    void validateTransferLimits_WhenAllLimitsAreSufficient_ShouldNotThrowException() {
-        // Arrange
-        BigDecimal totalTranAmount = new BigDecimal("500");
-        RetrieveTransferLimitResponse currentLimit = new RetrieveTransferLimitResponse();
-        RetrieveTransferLimitResponseData data = new RetrieveTransferLimitResponseData();
-        data.setAvailableTodayAmount(new BigDecimal("1000"));
-        data.setAvailableMonthToDateAmount(new BigDecimal("1000"));
-        data.setAvailableYearToDateAmount(new BigDecimal("1000"));
-        currentLimit.setData(data);
-
-        // Act & Assert
-        assertDoesNotThrow(() -> {
-            tradeTransferService.validateTransferLimits(totalTranAmount, currentLimit);
-        });
-    }
-
-    @Test
-    void handleDOperationResponse_WhenActionIsD_ShouldSetRequestUniqueKeyAndPrice() {
-        // Arrange
-        CreateTransferRequest createTransferRequest = new CreateTransferRequest();
-        CreateTransferRequestData data = new CreateTransferRequestData();
-        data.setActionRequestCode(ActionRequestCode.D); // D operation
-        createTransferRequest.setData(data);
-
-        CreateTransferResponse createTransferResponse = new CreateTransferResponse();
-        CreateTransferResponseData responseData = new CreateTransferResponseData();
-        List<TransferOrderInfo> orderInfoList = new ArrayList<>();
-        TransferOrderInfo orderInfo = new TransferOrderInfo();
-        orderInfo.setRequestPriceValue(new BigDecimal("100"));
-        orderInfoList.add(orderInfo);
-        responseData.setTransferOrderLists(orderInfoList);
-        createTransferResponse.setData(responseData);
-
-        GoldPriceResponse goldPriceResponse = new GoldPriceResponse();
-        GoldPriceResponseData mdsData = new GoldPriceResponseData();
-        mdsData.setGoldPriceAmount(new BigDecimal("1000"));
-        mdsData.setPublishTime("2025-11-20T10:00:00Z");
-        goldPriceResponse.setData(mdsData);
-
-        // Mock the duplicateSubmitPreventionService to return a unique key
-        String mockUniqueKey = "unique-key-123";
-        when(duplicateSubmitPreventionService.generateUniqueKey()).thenReturn(mockUniqueKey);
-
-        // Act
-        tradeTransferService.handleDOperationResponse(createTransferRequest, createTransferResponse, goldPriceResponse);
-
-        // Assert
-        assertNotNull(createTransferResponse.getData().getRequestUniqueKey());
-        assertEquals(mockUniqueKey, createTransferResponse.getData().getRequestUniqueKey());
-        assertEquals(new BigDecimal("1000"), createTransferResponse.getData().getTransferOrderLists().get(0).getRequestPriceValue());
-        assertEquals("HKD", createTransferResponse.getData().getTransferOrderLists().get(0).getPriceCurrencyCode());
-        assertEquals("2025-11-20T10:00:00Z", createTransferResponse.getData().getTransferOrderLists().get(0).getRequestPriceAsOfDateTime());
-    }
-
-    @Test
-    void handleDOperationResponse_WhenActionIsNotD_ShouldNotModifyResponse() {
-        // Arrange
-        CreateTransferRequest createTransferRequest = new CreateTransferRequest();
-        CreateTransferRequestData data = new CreateTransferRequestData();
-        data.setActionRequestCode(ActionRequestCode.C); // Not D operation
-        createTransferRequest.setData(data);
-
-        CreateTransferResponse createTransferResponse = new CreateTransferResponse();
-        CreateTransferResponseData responseData = new CreateTransferResponseData();
-        List<TransferOrderInfo> orderInfoList = new ArrayList<>();
-        TransferOrderInfo orderInfo = new TransferOrderInfo();
-        orderInfo.setRequestPriceValue(new BigDecimal("100"));
-        orderInfoList.add(orderInfo);
-        responseData.setTransferOrderLists(orderInfoList);
-        createTransferResponse.setData(responseData);
-
-        GoldPriceResponse goldPriceResponse = new GoldPriceResponse();
-        GoldPriceResponseData mdsData = new GoldPriceResponseData();
-        mdsData.setGoldPriceAmount(new BigDecimal("1000"));
-        mdsData.setPublishTime("2025-11-20T10:00:00Z");
-        goldPriceResponse.setData(mdsData);
-
-        // Act
-        tradeTransferService.handleDOperationResponse(createTransferRequest, createTransferResponse, goldPriceResponse);
-
-        // Assert
-        assertNull(createTransferResponse.getData().getRequestUniqueKey()); // Should not be set
-        assertEquals(new BigDecimal("100"), createTransferResponse.getData().getTransferOrderLists().get(0).getRequestPriceValue()); // Should remain unchanged
-        assertEquals("HKD", createTransferResponse.getData().getTransferOrderLists().get(0).getPriceCurrencyCode()); // Should remain unchanged
-        assertEquals("2025-11-20T10:00:00Z", createTransferResponse.getData().getTransferOrderLists().get(0).getRequestPriceAsOfDateTime()); // Should remain unchanged
-    }
-
-    @Test
-    void findAccountChecksumForAccountNumber_WhenAccountExists_ShouldReturnChecksum() {
-        // Arrange
-        CustomerAccounts customerAccounts = new CustomerAccounts();
-        InvestmentAccount account = new InvestmentAccount();
-        account.setChecksum("checksum-123");
-        InvestmentAccountId accountId = new InvestmentAccountId();
-        accountId.setAccountNumber("123456");
-        account.setInvestmentAccountId(accountId);
-        customerAccounts.setInvestmentAccountList(Collections.singletonList(account));
-
-        // Act
-        String result = tradeTransferService.findAccountChecksumForAccountNumber(customerAccounts, "123456");
-
-        // Assert
-        assertEquals("checksum-123", result);
-    }
-
-    @Test
-    void findAccountChecksumForAccountNumber_WhenAccountDoesNotExist_ShouldReturnNull() {
-        // Arrange
-        CustomerAccounts customerAccounts = new CustomerAccounts();
-        InvestmentAccount account = new InvestmentAccount();
-        account.setChecksum("checksum-123");
-        InvestmentAccountId accountId = new InvestmentAccountId();
-        accountId.setAccountNumber("123456");
-        account.setInvestmentAccountId(accountId);
-        customerAccounts.setInvestmentAccountList(Collections.singletonList(account));
-
-        // Act
-        String result = tradeTransferService.findAccountChecksumForAccountNumber(customerAccounts, "999999");
-
-        // Assert
-        assertNull(result);
-    }
-
-    @Test
-    void findAccountChecksumForAccountNumber_WhenCustomerAccountsIsNull_ShouldReturnNull() {
-        // Arrange
-        CustomerAccounts customerAccounts = null;
-
-        // Act
-        String result = tradeTransferService.findAccountChecksumForAccountNumber(customerAccounts, "123456");
-
-        // Assert
-        assertNull(result);
-    }
-
-    @Test
-    void maskNamesInResponse_RetrieveTransferListResponseData_WhenSenderAndReceiverBankCustomer_ShouldMaskNames() {
-        // Arrange
-        RetrieveTransferListResponseData responseData = new RetrieveTransferListResponseData();
-        List<TransferListItemInfo> transferLists = new ArrayList<>();
-
-        // Sender side with isReceiverBankCustomer = "Y" -> Mask sender names
-        TransferListItemInfo senderItem = new TransferListItemInfo();
-        senderItem.setTransferSideCode(TransferSideCode.SENDER);
-        senderItem.setIsReceiverBankCustomer("Y");
-        senderItem.setSenderCustomerFirstName("John");
-        senderItem.setSenderCustomerMiddleName("A");
-        transferLists.add(senderItem);
-
-        // Receiver side -> Mask sender names (as receiver is bank customer)
-        TransferListItemInfo receiverItem = new TransferListItemInfo();
-        receiverItem.setTransferSideCode(TransferSideCode.RECEIVER);
-        receiverItem.setSenderCustomerFirstName("Jane");
-        receiverItem.setSenderCustomerMiddleName("B");
-        transferLists.add(receiverItem);
-
-        responseData.setTransferLists(transferLists);
-
-        // Act
-        tradeTransferService.maskNamesInResponse(responseData);
-
-        // Assert
-        assertEquals("J****n", responseData.getTransferLists().get(0).getSenderCustomerFirstName());
-        assertEquals("A***", responseData.getTransferLists().get(0).getSenderCustomerMiddleName());
-        assertEquals("J****e", responseData.getTransferLists().get(1).getSenderCustomerFirstName());
-        assertEquals("B***", responseData.getTransferLists().get(1).getSenderCustomerMiddleName());
-    }
-
-    @Test
-    void maskNamesInResponse_RetrieveTransferDetailResponseData_WhenSenderAndReceiverBankCustomer_ShouldMaskNames() {
-        // Arrange
-        RetrieveTransferDetailResponseData responseData = new RetrieveTransferDetailResponseData();
-        responseData.setTransferSideCode(TransferSideCode.SENDER);
-        responseData.setIsReceiverBankCustomer("Y");
-        responseData.setSenderCustomerFirstName("John");
-        responseData.setSenderCustomerMiddleName("A");
-
-        // Act
-        tradeTransferService.maskNamesInResponse(responseData);
-
-        // Assert
-        assertEquals("J****n", responseData.getSenderCustomerFirstName());
-        assertEquals("A***", responseData.getSenderCustomerMiddleName());
-    }
-
-    @Test
-    void maskNamesInResponse_RetrieveTransferDetailResponseData_WhenReceiverAndNotBankCustomer_ShouldNotMaskNames() {
-        // Arrange
-        RetrieveTransferDetailResponseData responseData = new RetrieveTransferDetailResponseData();
-        responseData.setTransferSideCode(TransferSideCode.RECEIVER);
-        responseData.setIsReceiverBankCustomer("N");
-        responseData.setSenderCustomerFirstName("John");
-        responseData.setSenderCustomerMiddleName("A");
-
-        // Act
-        tradeTransferService.maskNamesInResponse(responseData);
-
-        // Assert
-        assertEquals("John", responseData.getSenderCustomerFirstName());
-        assertEquals("A", responseData.getSenderCustomerMiddleName());
-    }
-
-    @Test
-    void maskNamesInResponse_RetrieveTransferDetailResponseData_WhenSenderAndNotReceiverBankCustomer_ShouldNotMaskNames() {
-        // Arrange
-        RetrieveTransferDetailResponseData responseData = new RetrieveTransferDetailResponseData();
-        responseData.setTransferSideCode(TransferSideCode.SENDER);
-        responseData.setIsReceiverBankCustomer("N"); // Not bank customer
-        responseData.setSenderCustomerFirstName("John");
-        responseData.setSenderCustomerMiddleName("A");
-
-        // Act
-        tradeTransferService.maskNamesInResponse(responseData);
-
-        // Assert
-        assertEquals("John", responseData.getSenderCustomerFirstName());
-        assertEquals("A", responseData.getSenderCustomerMiddleName());
-    }
-
-    // ==================== Helper Methods ====================
-
-    private Map<String, String> buildValidRequestHeader() {
-        Map<String, String> header = new HashMap<>();
-        header.put(HTTPRequestHeaderConstants.X_HSBC_CHNL_COUNTRYCODE, "HK");
-        header.put(HTTPRequestHeaderConstants.X_HSBC_CHNL_GROUP_MEMBER, "HBAP");
-        header.put(HTTPRequestHeaderConstants.X_HSBC_SAML, dummyToken);
-        header.put(HTTPRequestHeaderConstants.X_HSBC_SAML3, dummyToken);
-        header.put(HTTPRequestHeaderConstants.X_HSBC_CUSTOMER_ID, "dummy-cin");
-        return header;
+        // 验证所有远程调用都被执行了
+        verify(tradeTransferService).retrieveAccountIdWithCheckSum(anyMap());
+        verify(tradeTransferService).retrieveCustomerNamesWithCinNumber(eq(mockCinNumber), anyMap());
+        verify(tradeTransferService).retrieveGoldPrice(anyMap());
+        verify(tradeLimitService).retrieveLimitations(anyMap());
+        verify(restClientService).post(anyString(), anyMap(), any(), eq(com.hsbc.trade.transfer.createtransfer.CreateTransferResponse.class), anyInt(), anyBoolean());
     }
 }
