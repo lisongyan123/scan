@@ -44,16 +44,15 @@ void testRetrieveTransferDetail_Success_WithCustomerName() {
     PartyContact mockContact = new PartyContact();
     mockContact.setMobileNumber1("123456789");
     mockPartyContactResponse.setContact(mockContact);
-
-    // --- CRITICAL: 使用与生产代码完全相同的逻辑构建预期的 URL ---
-    // 这是关键修改：不再硬编码拼接字符串，而是复现 UriComponentsBuilder 的构建过程
+    
+    // --- CRITICAL: Build the exact URL using the same logic as production code ---
     UriComponentsBuilder uriBuilder = UriComponentsBuilder.fromUriString(MOCK_TRADE_ONLINE_URL)
             .path("/transfers/{transferReferenceNumber}")
             .queryParam(TransferQueryParameterConstant.CUSTOMER_INTERNAL_NUMBER, customerInternalNumber)
             .queryParam(TransferQueryParameterConstant.S_PARAMETER_TYPE, TransferQueryParameterConstant.SENSITIVE_HEADER);
     URI expectedRequestURI = uriBuilder.build(transferReferenceNumber);
-    String expectedUrl = expectedRequestURI.toString(); // 这就是生产代码最终调用的 URL
-
+    String expectedUrl = expectedRequestURI.toString();
+    
     // 构建 buildSensitiveHeaders 和 updateHeaderforCEP 后的最终 header
     String sensitiveDataJson = "[{\"key\":\"SensitiveHeadersKey\",\"value\":\"" + customerInternalNumber + "\"}]";
     String base64SensitiveData = Base64.getEncoder().encodeToString(sensitiveDataJson.getBytes(StandardCharsets.UTF_8));
@@ -70,10 +69,9 @@ void testRetrieveTransferDetail_Success_WithCustomerName() {
     String expectedContactUrl = MOCK_CEP_PARTY_CONTACT_URL.replace("CIN-SensitiveHeadersKey", customerInternalNumber);
 
     // --- 1. Mock the precise URL built by UriComponentsBuilder ---
-    // 使用我们精确构建的 expectedUrl，而不是硬编码的字符串
     when(mockRestClientService.get(
-            eq(expectedUrl), // ✅ 使用精确构建的 URL，与生产代码完全一致
-            anyMap(), // 我们仍然用 anyMap()，因为后续的 addCustomerNameToUri 等方法会修改它
+            eq(expectedUrl),
+            anyMap(),
             eq(RetrieveTransferDetailResponse.class),
             eq(10000), // ✅ 明确指定 timeout 为 10000 (来自 setUp 中的 ReflectionTestUtils)
             eq(true)   // ✅ 明确指定 printMessageLog 为 true
@@ -123,7 +121,7 @@ void testRetrieveTransferDetail_Success_WithCustomerName() {
     assertEquals(0, result.getResponseDetails().getResponseCodeNumber());
 
     verify(mockRestClientService, times(1)).get(
-            eq(expectedUrl), // ✅ 验证时也使用精确构建的 URL
+            eq(expectedUrl),
             anyMap(),
             eq(RetrieveTransferDetailResponse.class),
             eq(10000),
