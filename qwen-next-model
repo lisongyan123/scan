@@ -7,21 +7,26 @@ void testRetrieveTransferDetail_Success_WithCustomerName() {
     // 1. Mock: retrieveTransferDetail Response
     RetrieveTransferDetailResponse mockResponse = new RetrieveTransferDetailResponse();
     RetrieveTransferDetailResponseData responseData = new RetrieveTransferDetailResponseData();
+
     // ✅ 关键修复1：设置一个非空的 AccountId
     AccountId accountId = new AccountId();
     accountId.setAccountNumber("987654321"); // 这个值必须和下面 mock 的 InvestmentAccount 一致
     responseData.setInvestmentAccount(accountId);
+
     // ✅ 关键修复2：设置 responseDetails！这是 ResponseInfoHandler.prepareResponse 所必需的
     ResponseDetails responseDetails = new ResponseDetails();
     responseDetails.setResponseCodeNumber(0); // ✅ 成功状态码，必须设置！
-    responseData.setResponseDetails(responseDetails); // ✅ 将 responseDetails 设置到 data 中 —— 这是关键！加了这一行！
+    responseData.setResponseDetails(responseDetails); // ✅ 将 responseDetails 设置到 data 中 —— 这是关键！
+
     mockResponse.setData(responseData); // ✅ 设置 data
 
     // 2. ✅ 关键：Mock CustomerAccounts for retrieveCustomerAccounts() - 这是之前缺失的！
     CustomerAccounts mockCustomerAccounts = new CustomerAccounts();
     List<InvestmentAccount> accList = new ArrayList<>();
+
     InvestmentAccount acc1 = new InvestmentAccount();
     acc1.setChecksum("chk123");
+
     // ✅ 创建一个完整的 com.hsbc.trade.transfer.domain.account.AccountId 对象
     com.hsbc.trade.transfer.domain.account.AccountId investmentAccountId = com.hsbc.trade.transfer.domain.account.AccountId.builder()
             .countryAccountCode("CN")
@@ -31,8 +36,10 @@ void testRetrieveTransferDetail_Success_WithCustomerName() {
             .accountTypeCode("INV")
             .accountCurrencyCode("CNY")
             .build();
+
     acc1.setInvestmentAccountId(investmentAccountId); // ✅ 设置关联
     accList.add(acc1);
+
     mockCustomerAccounts.setInvestmentAccountList(accList); // ✅ 设置非空列表
 
     // 3. Mock: PartyNameResponse for addCustomerNameToUri
@@ -50,10 +57,14 @@ void testRetrieveTransferDetail_Success_WithCustomerName() {
     mockPartyContactResponse.setContact(mockContact);
 
     // --- CRITICAL: Mock the specific restClientService.get calls with exact URLs and headers ---
+    // ✅ 关键修正：使用的是 'restClientService'，而不是 'mockRestClientService'
+    // 因为 tradeTransferService 注入的是 'restClientService'
+
     // 1. Call for retrieveTransferDetail itself
-    // ✅ 使用的是 'restClientService'，而不是 'mockRestClientService'
+    // 构建精确的URL
+    String expectedDetailUrl = MOCK_TRADE_ONLINE_URL + "/transfers/{transferReferenceNumber}?customerInternalNumber=" + customerInternalNumber + "&sParameterType=SENS";
     when(restClientService.get(
-            eq(MOCK_TRADE_ONLINE_URL + "/transfers/{transferReferenceNumber}?customerInternalNumber=" + customerInternalNumber + "&sParameterType=SENS"),
+            eq(expectedDetailUrl),
             anyMap(),
             eq(RetrieveTransferDetailResponse.class),
             anyInt(),
@@ -62,29 +73,30 @@ void testRetrieveTransferDetail_Success_WithCustomerName() {
 
     // 2. ✅ 关键修复：Mock retrieveCustomerAccounts() 的调用
     // 注意：URL 是 MOCK_ACCOUNTS_MAP_URL + "accounts-map?consumerId=DAC"
-    // ✅ 使用的是 'restClientService'
+    String expectedAccountsUrl = MOCK_ACCOUNTS_MAP_URL + "accounts-map?consumerId=DAC";
     when(restClientService.get(
-            eq(MOCK_ACCOUNTS_MAP_URL + "accounts-map?consumerId=DAC"), // ✅ 完全匹配 URL
+            eq(expectedAccountsUrl),
             anyMap(), // request headers rebuilt
             eq(CustomerAccounts.class),
             anyInt(),
             anyBoolean()
-    )).thenReturn(mockCustomerAccounts); // ✅ 返回我们构建的非空对象
+    )).thenReturn(mockCustomerAccounts);
 
     // 3. Call for retrieveCustomerNamesWithCinNumber (inside addCustomerNameToUri)
     // 构建 buildSensitiveHeaders 和 updateHeaderforCEP 后的最终 header
     String sensitiveDataJson = "[{\"key\":\"SensitiveHeadersKey\",\"value\":\"" + customerInternalNumber + "\"}]";
     String base64SensitiveData = Base64.getEncoder().encodeToString(sensitiveDataJson.getBytes(StandardCharsets.UTF_8));
+
     Map<String, String> expectedHeadersForCEP = new HashMap<>();
     expectedHeadersForCEP.putAll(baseRequestHeaders);
     expectedHeadersForCEP.remove(HTTPRequestHeaderConstants.X_HSBC_SAML);
     expectedHeadersForCEP.remove(HTTPRequestHeaderConstants.X_HSBC_SAML3);
-    expectedHeadersForCEP.put(HTTPRequestHeaderConstants.X_HSBC_E2E_TRUST_TOKEN, "mock-e2e-token");
+    expectedHeadersForCEP.put(HTTPRequestHeaderConstants.X_HSBC_E2E_TRUST_TOKEN, "e2e-token"); // 使用的是注入的 e2ETrustTokenUtil
     expectedHeadersForCEP.put(HTTPRequestHeaderConstants.X_HSBC_GBGF, "");
     expectedHeadersForCEP.put(HTTPRequestHeaderConstants.X_HSBC_SOURCE_SYSTEM_ID, "");
     expectedHeadersForCEP.put(HTTPRequestHeaderConstants.X_HSBC_SENSITIVE_DATA, base64SensitiveData);
+
     String expectedNameUrl = MOCK_CEP_PARTY_NAME_URL.replace("CIN-SensitiveHeadersKey", customerInternalNumber);
-    // ✅ 使用的是 'restClientService'
     when(restClientService.get(
             eq(expectedNameUrl),
             argThat(headers -> headers.equals(expectedHeadersForCEP)), // ✅ 精确匹配 header
@@ -95,7 +107,6 @@ void testRetrieveTransferDetail_Success_WithCustomerName() {
 
     // 4. Call for retrieveCustomerPhoneNumberWithCinNumber (inside addCustomerContactToUri)
     String expectedContactUrl = MOCK_CEP_PARTY_CONTACT_URL.replace("CIN-SensitiveHeadersKey", customerInternalNumber);
-    // ✅ 使用的是 'restClientService'
     when(restClientService.get(
             eq(expectedContactUrl),
             argThat(headers -> headers.equals(expectedHeadersForCEP)), // ✅ 精确匹配 header
@@ -104,9 +115,9 @@ void testRetrieveTransferDetail_Success_WithCustomerName() {
             anyBoolean()
     )).thenReturn(mockPartyContactResponse);
 
-    // Mock E2E token generation
-    // ✅ 使用的是 'e2ETrustTokenUtil'，它是注入到 tradeTransferService 的，也是 @Mock 的
-    when(e2ETrustTokenUtil.getE2ETrustToken()).thenReturn("mock-e2e-token");
+    // Mock E2E token generation for updateHeaderforCEP calls
+    // ✅ 关键修正：使用的是注入到 tradeTransferService 的 'e2ETrustTokenUtil'
+    when(e2ETrustTokenUtil.getE2ETrustToken()).thenReturn("e2e-token");
 
     // Act
     RetrieveTransferDetailResponse result = tradeTransferService.retrieveTransferDetail(baseRequestHeaders, transferReferenceNumber);
@@ -116,24 +127,26 @@ void testRetrieveTransferDetail_Success_WithCustomerName() {
     assertNotNull(result.getData());
     assertNotNull(result.getData().getInvestmentAccount());
     assertEquals("987654321", result.getData().getInvestmentAccount().getAccountNumber());
+
     // ✅ 验证 checksum 被成功设置
     assertNotNull(result.getData().getAccountChecksumIdentifier());
     assertEquals("chk123", result.getData().getAccountChecksumIdentifier()); // ✅ 这是来自 mockCustomerAccounts 的 checksum
+
     // ✅ 验证 responseDetails 被正确设置
     assertNotNull(result.getResponseDetails());
     assertEquals(0, result.getResponseDetails().getResponseCodeNumber());
 
     // Verify the specific interactions happened
-    // ✅ 使用的是 'restClientService'
+    // ✅ 关键修正：使用的是 'restClientService'
     verify(restClientService, times(1)).get(
-            eq(MOCK_TRADE_ONLINE_URL + "/transfers/{transferReferenceNumber}?customerInternalNumber=" + customerInternalNumber + "&sParameterType=SENS"),
+            eq(expectedDetailUrl),
             anyMap(),
             eq(RetrieveTransferDetailResponse.class),
             anyInt(),
             anyBoolean()
     );
     verify(restClientService, times(1)).get(
-            eq(MOCK_ACCOUNTS_MAP_URL + "accounts-map?consumerId=DAC"),
+            eq(expectedAccountsUrl),
             anyMap(),
             eq(CustomerAccounts.class),
             anyInt(),
@@ -153,5 +166,5 @@ void testRetrieveTransferDetail_Success_WithCustomerName() {
             anyInt(),
             anyBoolean()
     );
-    verify(e2ETrustTokenUtil, times(2)).getE2ETrustToken(); // 一次用于 name, 一次用于 contact
+    verify(e2ETrustTokenUtil, times(2)).getE2ETrustToken(); // 一次用于name，一次用于contact
 }
