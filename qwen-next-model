@@ -1,10 +1,25 @@
+import com.hsbc.trade.HTTPRequestHeaderConstants;
+import com.hsbc.trade.common.AccountId;
+import com.hsbc.trade.service.RestClientService;
+import com.hsbc.trade.transfer.domain.account.CustomerAccounts;
+import com.hsbc.trade.transfer.domain.account.InvestmentAccount;
+import com.hsbc.trade.transfer.domain.cep.PartyContact;
+import com.hsbc.trade.transfer.domain.cep.PartyName;
+import com.hsbc.trade.transfer.domain.mds.GoldPriceResponse;
+import com.hsbc.trade.transfer.domain.mds.GoldPriceResponseData;
+import com.hsbc.trade.transfer.domain.RetrieveTransferListResponse;
+import com.hsbc.trade.transfer.domain.RetrieveTransferListResponseData;
+import com.hsbc.trade.transfer.domain.RetrieveTransferLimitResponse;
+import com.hsbc.trade.transfer.domain.RetrieveTransferLimitResponse.Data;
+import com.hsbc.trade.transfer.enums.ExceptionMessageEnum;
+import com.hsbc.trade.transfer.service.TradeTransferServiceImpl;
+import com.hsbc.trade.utils.E2ETrustTokenUtil;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.InjectMocks;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
-import org.springframework.http.HttpStatus;
-import org.springframework.web.client.HttpClientErrorException;
+import org.springframework.http.MediaType;
 
 import java.math.BigDecimal;
 import java.util.*;
@@ -34,19 +49,18 @@ public class TradeTransferServiceImplTest {
     @InjectMocks
     private TradeTransferServiceImpl tradeTransferService; // 被测类
 
-    // =============== 测试 retrieveTransferList() ===============
+    // =============== 测试 retrieveTransferList_Success ===============
 
     @Test
     public void retrieveTransferList_Success() {
         // --- 1. 准备模拟的请求头 ---
         Map<String, String> requestHeader = new HashMap<>();
-        requestHeader.put("X-HSBC-Customer-ID", "C123456");
+        requestHeader.put(HTTPRequestHeaderConstants.X_HSBC_CUSTOMER_ID, "C123456");
 
-        // --- 2. 模拟 retrieveCustomerAccounts() 的返回值（关键！）---
+        // --- 2. 模拟 retrieveCustomerAccounts() 返回有效数据（关键1）---
         CustomerAccounts customerAccounts = new CustomerAccounts();
         List<InvestmentAccount> investmentAccountList = new ArrayList<>();
 
-        // 创建一个有效的投资账户，包含 checksum 和 accountId
         InvestmentAccount account = new InvestmentAccount();
         AccountId accountId = new AccountId();
         accountId.setCountryAccountCode("HK");
@@ -56,12 +70,11 @@ public class TradeTransferServiceImplTest {
         accountId.setAccountTypeCode("GOLD");
         accountId.setAccountCurrencyCode("HKD");
         account.setInvestmentAccountId(accountId);
-        account.setChecksum("CHK123456"); // 必须有这个字段！
+        account.setChecksum("CHK123456"); // 必须有，用于构建 accountIdMap
         investmentAccountList.add(account);
 
         customerAccounts.setInvestmentAccountList(investmentAccountList);
 
-        // 模拟 restClientService.get(...) 调用，返回上面构建的 customerAccounts
         when(restClientService.get(
                 anyString(), // accountsMapUrl
                 anyMap(),    // requestHeaders
@@ -70,35 +83,51 @@ public class TradeTransferServiceImplTest {
                 anyBoolean()
         )).thenReturn(customerAccounts);
 
-        // --- 3. 模拟其他依赖（如 CEP 服务）---
-        PartyNameResponse partyNameResponse = new PartyNameResponse();
-        PartyNameResponse.Name name = new PartyNameResponse.Name();
-        name.setLastName("CHAN");
-        name.setGivenName("TOM");
-        name.setCustomerChristianName("KING");
-        partyNameResponse.setName(name);
-        when(restClientService.get(anyString(), anyMap(), eq(PartyNameResponse.class), anyInt(), anyBoolean()))
-                .thenReturn(partyNameResponse);
+        // --- 3. 模拟 retrieveCustomerNamesWithCinNumber() 返回 PartyName ---
+        PartyName partyName = new PartyName();
+        partyName.setLastName("CHAN");
+        partyName.setGivenName("TOM");
+        partyName.setCustomerChristianName("KING");
+        when(restClientService.get(anyString(), anyMap(), eq(PartyName.class), anyInt(), anyBoolean()))
+                .thenReturn(partyName);
 
-        PartyContactResponse partyContactResponse = new PartyContactResponse();
-        PartyContactResponse.Contact contact = new PartyContactResponse.Contact();
-        contact.setMobileNumber1("12345678");
-        partyContactResponse.setContact(contact);
-        when(restClientService.get(anyString(), anyMap(), eq(PartyContactResponse.class), anyInt(), anyBoolean()))
-                .thenReturn(partyContactResponse);
+        // --- 4. 模拟 retrieveCustomerPhoneNumberWithCinNumber() 返回 PartyContact ---
+        PartyContact partyContact = new PartyContact();
+        partyContact.setMobileNumber1("12345678");
+        when(restClientService.get(anyString(), anyMap(), eq(PartyContact.class), anyInt(), anyBoolean()))
+                .thenReturn(partyContact);
 
-        // --- 4. 模拟 retrieveTransferLimit() ---
+        // --- 5. 模拟 retrieveTransferLimit() ---
         RetrieveTransferLimitResponse limitResponse = new RetrieveTransferLimitResponse();
-        RetrieveTransferLimitResponse.Data limitData = new RetrieveTransferLimitResponse.Data();
+        Data limitData = new Data();
         limitData.setMaxDailyLimitedAmount(BigDecimal.valueOf(10000));
         limitData.setAvailableTodayAmount(BigDecimal.valueOf(5000));
         limitResponse.setData(limitData);
         when(tradeLimitService.retrieveLimitations(anyMap())).thenReturn(limitResponse);
 
-        // --- 5. 模拟 CEP 的 E2E Trust Token 头部（如果需要）---
+        // --- 6. 模拟 retrieveGoldPrice() ---
+        GoldPriceResponse goldPriceResponse = new GoldPriceResponse();
+        GoldPriceResponseData goldPriceData = new GoldPriceResponseData();
+        goldPriceData.setGoldPriceAmount(BigDecimal.valueOf(100.50));
+        goldPriceData.setPublishTime("2025-11-22T10:00:00Z");
+        goldPriceResponse.setData(goldPriceData);
+        when(restClientService.get(anyString(), anyMap(), eq(GoldPriceResponse.class), anyInt(), anyBoolean()))
+                .thenReturn(goldPriceResponse);
+
+        // --- 7. 模拟 E2E Trust Token ---
         when(e2ETrustTokenUtil.getE2ETrustToken()).thenReturn("mock-e2e-token");
 
-        // --- 6. 调用被测方法 ---
+        // --- 8. ✅ 关键：模拟最终的 restClientService.get() 调用，返回有效的 RetrieveTransferListResponse（关键2）---
+        RetrieveTransferListResponse mockResponse = constructValidRetrieveTransferListResponse();
+        when(restClientService.get(
+                anyString(), // 任意URI（由UriComponentsBuilder构建）
+                anyMap(),    // 任意请求头
+                eq(RetrieveTransferListResponse.class), // 类型必须匹配！
+                anyInt(),    // timeout
+                anyBoolean() // printMessageLog
+        )).thenReturn(mockResponse);
+
+        // --- 9. 调用被测方法 ---
         RetrieveTransferListResponse response = tradeTransferService.retrieveTransferList(
                 requestHeader,
                 "PENDING",
@@ -108,48 +137,61 @@ public class TradeTransferServiceImplTest {
                 "MOBILE"
         );
 
-        // --- 7. 断言 ---
+        // --- 10. 断言 ---
         assertNotNull(response);
         assertNotNull(response.getData());
         assertNotNull(response.getData().getTransferLists());
-        assertTrue(response.getData().getTransferLists().isEmpty()); // 根据您的业务，这里可能为空，但至少请求构建成功
+        assertEquals(1, response.getData().getTransferLists().size()); // 确保我们返回了数据
 
-        // 验证 restClientService 被正确调用，且传入了 checksumIdentifiers 参数
+        // 验证 checksumIdentifiers 被正确添加到请求中（来自 accountIdMap）
         verify(restClientService).get(
-                argThat(uri -> uri.contains("checksumIdentifiers=CHK123456")), // 确保 checksum 被传入
+                argThat(uri -> uri.contains("checksumIdentifiers=CHK123456")),
                 anyMap(),
                 eq(RetrieveTransferListResponse.class),
                 anyInt(),
                 anyBoolean()
         );
+
+        // 验证所有依赖都被调用
+        verify(restClientService).get(anyString(), anyMap(), eq(CustomerAccounts.class), anyInt(), anyBoolean());
+        verify(restClientService).get(anyString(), anyMap(), eq(PartyName.class), anyInt(), anyBoolean());
+        verify(restClientService).get(anyString(), anyMap(), eq(PartyContact.class), anyInt(), anyBoolean());
+        verify(tradeLimitService).retrieveLimitations(anyMap());
+        verify(restClientService).get(anyString(), anyMap(), eq(GoldPriceResponse.class), anyInt(), anyBoolean());
+        verify(restClientService).get(anyString(), anyMap(), eq(RetrieveTransferListResponse.class), anyInt(), anyBoolean()); // 最终调用
     }
 
-    // =============== 测试 retrieveTransferList() - 异常情况（可选） ===============
-    // 如果您的测试用例中有“空账户列表”的异常场景，也可以模拟返回空列表
-    @Test
-    public void retrieveTransferList_AccountListEmpty() {
-        // 模拟返回空账户列表
-        CustomerAccounts customerAccounts = new CustomerAccounts();
-        customerAccounts.setInvestmentAccountList(new ArrayList<>());
+    // --- 辅助方法：构造一个完整的、有效的 RetrieveTransferListResponse ---
+    private RetrieveTransferListResponse constructValidRetrieveTransferListResponse() {
+        RetrieveTransferListResponse response = new RetrieveTransferListResponse();
+        RetrieveTransferListResponseData data = new RetrieveTransferListResponseData();
 
-        when(restClientService.get(anyString(), anyMap(), eq(CustomerAccounts.class), anyInt(), anyBoolean()))
-                .thenReturn(customerAccounts);
+        List<com.hsbc.trade.transfer.domain.RetrieveTransferListResponseData.TransferListItemInfo> transferList = new ArrayList<>();
+        com.hsbc.trade.transfer.domain.RetrieveTransferListResponseData.TransferListItemInfo item = new com.hsbc.trade.transfer.domain.RetrieveTransferListResponseData.TransferListItemInfo();
 
-        // 其他模拟省略...
+        // 设置所有必要字段，避免空指针
+        item.setTransferReferenceNumber("TRF123456789");
+        item.setTransferSideCode("SENDER");
+        item.setSenderCustomerFirstName("TOM");
+        item.setSenderCustomerMiddleName("KING");
+        item.setSenderCustomerLastName("CHAN");
+        item.setReceiverCustomerFirstName("JACK");
+        item.setReceiverCustomerMiddleName("JAMES");
+        item.setReceiverCustomerLastName("WONG");
+        item.setTransferQuantity(BigDecimal.valueOf(100));
+        item.setTransferAmount(BigDecimal.valueOf(10000));
+        item.setRequestPriceValue(BigDecimal.valueOf(100.50));
+        item.setRequestPriceCurrencyCode("HKD");
+        item.setTransferStatus("PENDING");
+        item.setTransferDate("2025-11-22");
+        item.setSenderInvestmentAccountChecksumIdentifier("CHK123456");
+        item.setReceiverInvestmentAccountChecksumIdentifier("CHK987654");
 
-        // 调用方法
-        RetrieveTransferListResponse response = tradeTransferService.retrieveTransferList(
-                Map.of("X-HSBC-Customer-ID", "C123456"),
-                "PENDING",
-                Collections.emptyList(),
-                "{}",
-                "GOLD",
-                "MOBILE"
-        );
+        transferList.add(item);
 
-        // 由于 extractAccountIdMap() 返回空 Map，不会抛异常，但 uriBuilder 不会添加 checksumIdentifiers
-        // 如果您的业务要求必须有账户才能调用，这里可以断言日志或行为
-        assertNotNull(response);
-        verify(restClientService).get(anyString(), anyMap(), eq(CustomerAccounts.class), anyInt(), anyBoolean());
+        data.setTransferLists(transferList);
+        response.setData(data);
+
+        return response;
     }
 }
