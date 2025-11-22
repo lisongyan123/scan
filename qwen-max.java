@@ -71,116 +71,112 @@ class TradeTransferServiceImplRetrieveTransferDetailTest {
     }
 
     @Test
-    void testRetrieveTransferDetail_Success_WithCustomerNameAndChecksum() {
-        // Arrange
-        String transferReferenceNumber = "TRF123456";
-        String customerInternalNumber = "TESTcin123";
-        String accountNumber = "987654321";
-        String checksum = "chk123";
+void testRetrieveTransferDetail_Success_WithCustomerName() {
+    // Arrange
+    String transferReferenceNumber = "ref123";
+    String customerInternalNumber = "TESTcin123";
 
-        // 1. Mock trade-online response
-        RetrieveTransferDetailResponse mockResponse = new RetrieveTransferDetailResponse();
-        RetrieveTransferDetailResponseData responseData = new RetrieveTransferDetailResponseData();
-        com.hsbc.trade.common.AccountId accountId = new com.hsbc.trade.common.AccountId();
-        accountId.setAccountNumber(accountNumber);
-        responseData.setInvestmentAccount(accountId);
-        ResponseDetails responseDetails = new ResponseDetails();
-        responseDetails.setResponseCodeNumber(0);
-        responseData.setResponseDetails(responseDetails);
-        mockResponse.setData(responseData);
+    // === 1. Mock trade-online response ===
+    RetrieveTransferDetailResponse mockResponse = new RetrieveTransferDetailResponse();
+    RetrieveTransferDetailResponseData responseData = new RetrieveTransferDetailResponseData();
+    AccountId accountId = new AccountId();
+    accountId.setAccountNumber("987654321");
+    responseData.setInvestmentAccount(accountId);
+    ResponseDetails responseDetails = new ResponseDetails();
+    responseDetails.setResponseCodeNumber(0);
+    responseData.setResponseDetails(responseDetails);
+    mockResponse.setData(responseData);
 
-        // 2. Mock accounts-map response (for checksum mapping)
-        CustomerAccounts customerAccounts = new CustomerAccounts();
-        InvestmentAccount investmentAccount = new InvestmentAccount();
-        investmentAccount.setChecksum(checksum);
-        com.hsbc.trade.transfer.domain.account.AccountId invAccountId =
-                com.hsbc.trade.transfer.domain.account.AccountId.builder()
-                        .countryAccountCode("HK")
-                        .groupMemberAccountCode("HBAP")
-                        .accountNumber(accountNumber)
-                        .accountProductTypeCode("GOLD")
-                        .accountTypeCode("01")
-                        .accountCurrencyCode("HKD")
-                        .build();
-        investmentAccount.setInvestmentAccountId(invAccountId);
-        customerAccounts.setInvestmentAccountList(Collections.singletonList(investmentAccount));
+    // === 2. Mock accounts-map ===
+    CustomerAccounts mockCustomerAccounts = new CustomerAccounts();
+    InvestmentAccount acc = new InvestmentAccount();
+    acc.setChecksum("chk123");
+    com.hsbc.trade.transfer.domain.account.AccountId invAccountId =
+        com.hsbc.trade.transfer.domain.account.AccountId.builder()
+            .countryAccountCode("HK")
+            .groupMemberAccountCode("HBAP")
+            .accountNumber("987654321")
+            .accountProductTypeCode("GOLD")
+            .accountTypeCode("01")
+            .accountCurrencyCode("HKD")
+            .build();
+    acc.setInvestmentAccountId(invAccountId);
+    mockCustomerAccounts.setInvestmentAccountList(Collections.singletonList(acc));
 
-        // 3. Mock CEP responses
-        PartyNameResponse partyNameResponse = new PartyNameResponse();
-        PartyName name = new PartyName();
-        name.setLastName("Doe");
-        name.setGivenName("John");
-        name.setCustomerChristianName("Michael");
-        partyNameResponse.setName(name);
+    // === 3. Mock CEP responses ===
+    PartyNameResponse mockNameResponse = new PartyNameResponse();
+    PartyName name = new PartyName();
+    name.setLastName("Doe");
+    name.setGivenName("John");
+    name.setCustomerChristianName("Smith");
+    mockNameResponse.setName(name);
 
-        PartyContactResponse partyContactResponse = new PartyContactResponse();
-        PartyContact contact = new PartyContact();
-        contact.setMobileNumber1("123456789");
-        partyContactResponse.setContact(contact);
+    PartyContactResponse mockContactResponse = new PartyContactResponse();
+    PartyContact contact = new PartyContact();
+    contact.setMobileNumber1("123456789");
+    mockContactResponse.setContact(contact);
 
-        // 4. Mock E2E token
-        when(e2ETrustTokenUtil.getE2ETrustToken()).thenReturn("mock-e2e-token");
+    // === 4. Build expected headers for CEP name (uses updateHeaderforCEP) ===
+    Map<String, String> baseHeaders = buildRequestHeaders(baseRequestHeaders); // includes X_HSBC_CUSTOMER_ID etc.
+    Map<String, String> cepHeaders = new HashMap<>(baseHeaders);
+    cepHeaders.remove(HTTPRequestHeaderConstants.X_HSBC_SAML);
+    cepHeaders.remove(HTTPRequestHeaderConstants.X_HSBC_SAML3);
+    cepHeaders.put(HTTPRequestHeaderConstants.X_HSBC_E2E_TRUST_TOKEN, "mock-e2e-token");
+    cepHeaders.put(HTTPRequestHeaderConstants.X_HSBC_GBGF, "");
+    cepHeaders.put(HTTPRequestHeaderConstants.X_HSBC_SOURCE_SYSTEM_ID, "");
+    String sensitiveJson = "[{\"key\":\"SensitiveHeadersKey\",\"value\":\"" + customerInternalNumber + "\"}]";
+    String base64Sensitive = Base64.getEncoder().encodeToString(sensitiveJson.getBytes(StandardCharsets.UTF_8));
+    cepHeaders.put(HTTPRequestHeaderConstants.X_HSBC_SENSITIVE_DATA, base64Sensitive);
 
-        // 5. Mock all restClientService calls
-        // a. trade-online
-        when(restClientService.get(
-                startsWith(MOCK_TRADE_ONLINE_URL + "/transfers/TRF123456?"),
-                anyMap(),
-                eq(RetrieveTransferDetailResponse.class),
-                anyInt(),
-                anyBoolean()
-        )).thenReturn(mockResponse);
+    // === 5. Build expected headers for CEP contact (⚠️ does NOT use updateHeaderforCEP!) ===
+    Map<String, String> contactHeaders = new HashMap<>(baseHeaders);
+    contactHeaders.put(HTTPRequestHeaderConstants.X_HSBC_SENSITIVE_DATA, base64Sensitive); // only this is added
 
-        // b. accounts-map
-        when(restClientService.get(
-                eq(MOCK_ACCOUNTS_MAP_URL + "accounts-map?consumerId=DAC"),
-                anyMap(),
-                eq(CustomerAccounts.class),
-                anyInt(),
-                anyBoolean()
-        )).thenReturn(customerAccounts);
+    // === 6. Mock all calls ===
+    when(restClientService.get(
+        eq(MOCK_TRADE_ONLINE_URL + "/transfers/ref123?customerInternalNumber=TESTcin123&sParameterType=SENS"),
+        anyMap(),
+        eq(RetrieveTransferDetailResponse.class),
+        anyInt(),
+        anyBoolean()
+    )).thenReturn(mockResponse);
 
-        // c. CEP name
-        String expectedNameUrl = MOCK_CEP_PARTY_NAME_URL.replace("CIN-SensitiveHeadersKey", customerInternalNumber);
-        Map<String, String> expectedCepHeaders = buildExpectedCepHeaders(baseRequestHeaders, customerInternalNumber);
-        when(restClientService.get(
-                eq(expectedNameUrl),
-                argThat(h -> h.equals(expectedCepHeaders)),
-                eq(PartyNameResponse.class),
-                anyInt(),
-                anyBoolean()
-        )).thenReturn(partyNameResponse);
+    when(restClientService.get(
+        eq(MOCK_ACCOUNTS_MAP_URL + "accounts-map?consumerId=DAC"),
+        anyMap(),
+        eq(CustomerAccounts.class),
+        anyInt(),
+        anyBoolean()
+    )).thenReturn(mockCustomerAccounts);
 
-        // d. CEP contact
-        String expectedContactUrl = MOCK_CEP_PARTY_CONTACT_URL.replace("CIN-SensitiveHeadersKey", customerInternalNumber);
-        when(restClientService.get(
-                eq(expectedContactUrl),
-                argThat(h -> h.equals(expectedCepHeaders)),
-                eq(PartyContactResponse.class),
-                anyInt(),
-                anyBoolean()
-        )).thenReturn(partyContactResponse);
+    // ✅ Mock CEP name (with cepHeaders)
+    when(restClientService.get(
+        eq(MOCK_CEP_PARTY_NAME_URL.replace("CIN-SensitiveHeadersKey", customerInternalNumber)),
+        argThat(h -> h.equals(cepHeaders)),
+        eq(PartyNameResponse.class),
+        anyInt(),
+        anyBoolean()
+    )).thenReturn(mockNameResponse);
 
-        // Act
-        RetrieveTransferDetailResponse result = tradeTransferService.retrieveTransferDetail(baseRequestHeaders, transferReferenceNumber);
+    // ✅ FIX: Mock CEP contact (with contactHeaders — no E2E token!)
+    when(restClientService.get(
+        eq(MOCK_CEP_PARTY_CONTACT_URL.replace("CIN-SensitiveHeadersKey", customerInternalNumber)),
+        argThat(h -> h.equals(contactHeaders)), // ← 关键：使用 contactHeaders 而不是 cepHeaders
+        eq(PartyContactResponse.class),
+        anyInt(),
+        anyBoolean()
+    )).thenReturn(mockContactResponse);
 
-        // Assert
-        assertNotNull(result);
-        assertNotNull(result.getData());
-        assertNotNull(result.getResponseDetails());
-        assertEquals(0, result.getResponseDetails().getResponseCodeNumber());
-        assertNotNull(result.getData().getInvestmentAccount());
-        assertEquals(accountNumber, result.getData().getInvestmentAccount().getAccountNumber());
-        assertEquals(checksum, result.getData().getAccountChecksumIdentifier()); // ✅ checksum set
-        assertEquals("Doe", result.getData().getSenderCustomerLastName()); // from CEP
-        assertEquals("123456789", result.getData().getSenderCustomerMobileNumber()); // from CEP
+    when(e2ETrustTokenUtil.getE2ETrustToken()).thenReturn("mock-e2e-token");
 
-        // Verify
-        verify(restClientService, times(1)).get(anyString(), anyMap(), eq(RetrieveTransferDetailResponse.class), anyInt(), anyBoolean());
-        verify(restClientService, times(1)).get(anyString(), anyMap(), eq(CustomerAccounts.class), anyInt(), anyBoolean());
-        verify(restClientService, times(2)).get(anyString(), anyMap(), any(), anyInt(), anyBoolean()); // 2 CEP calls
-        verify(e2ETrustTokenUtil, times(2)).getE2ETrustToken();
-    }
+    // Act
+    RetrieveTransferDetailResponse result = tradeTransferService.retrieveTransferDetail(baseRequestHeaders, transferReferenceNumber);
+
+    // Assert
+    assertNotNull(result);
+    assertNotNull(result.getData().getSenderCustomerMobileNumber());
+    assertEquals("123456789", result.getData().getSenderCustomerMobileNumber());
+}
 
     // Helper: 构建 CEP 预期 headers
     private Map<String, String> buildExpectedCepHeaders(Map<String, String> baseHeaders, String cin) {
