@@ -4,7 +4,7 @@ void createTransfers_Success() {
     CreateTransferRequest request = new CreateTransferRequest();
     CreateTransferRequestData data = new CreateTransferRequestData();
     request.setData(data);
-    // Set sender checksum (This is the key input for retrieveAccountIdWithCheckSum)
+    // Set sender checksum
     request.getData().setSenderInvestmentAccountChecksumIdentifier("CHECKSUM123");
     request.getData().setActionRequestCode(ActionRequestCode.D);
 
@@ -17,40 +17,8 @@ void createTransfers_Success() {
     request.getData().setReceiverLists(receivers);
 
     // --- Mock 1: Simulate the remote call inside retrieveAccountIdWithCheckSum ---
-    // This is the critical missing piece.
-    // retrieveAccountIdWithCheckSum calls retrieveCustomerAccountIdsList, which calls restClientService.get on customerAccountUrl
-    // We need to mock this call to return a valid RetrieveCustomerAccountsIdListResponse with the matching checksum.
-
-    // 1. Build the expected request headers for the customerAccountUrl call
-    Map<String, String> expectedHeadersForAccountIdRetrieval = new HashMap<>();
-    expectedHeadersForAccountIdRetrieval.putAll(sourceRequestHeader); // Start with the source headers
-    // The buildRequestHeaders method in AbstractRestService will add X_HSBC_CUSTOMER_ID and other headers
-    // We need to ensure our mock uses the same logic. The method will extract CIN from sourceRequestHeader
-    String expectedCin = sourceRequestHeader.get(HTTPRequestHeaderConstants.X_HSBC_CUSTOMER_ID);
-    expectedHeadersForAccountIdRetrieval.put(HTTPRequestHeaderConstants.X_HSBC_CUSTOMER_ID, expectedCin);
-    expectedHeadersForAccountIdRetrieval.put(HTTPRequestHeaderConstants.X_HSBC_CUSTOMER_ID_TYPE, "N");
-    expectedHeadersForAccountIdRetrieval.put(HttpHeaders.CONTENT_TYPE, MediaType.APPLICATION_JSON_VALUE);
-    // Add other headers that buildRequestHeaders might add (we can be more precise if needed, but this is often sufficient)
-    expectedHeadersForAccountIdRetrieval.put(HTTPRequestHeaderConstants.X_HSBC_SAML, dummyToken);
-    expectedHeadersForAccountIdRetrieval.put(HTTPRequestHeaderConstants.X_HSBC_SAML3, dummyToken);
-    expectedHeadersForAccountIdRetrieval.put(HTTPRequestHeaderConstants.X_HSBC_E2E_TRUST_TOKEN, "e2e-token"); // Mocked later
-    expectedHeadersForAccountIdRetrieval.put(HTTPRequestHeaderConstants.X_HSBC_CHNL_COUNTRYCODE, "HK");
-    expectedHeadersForAccountIdRetrieval.put(HTTPRequestHeaderConstants.X_HSBC_CHNL_GROUP_MEMBER, "HBAP");
-    expectedHeadersForAccountIdRetrieval.put(HTTPRequestHeaderConstants.X_HSBC_USER_ID, "testUser");
-    expectedHeadersForAccountIdRetrieval.put(HTTPRequestHeaderConstants.X_HSBC_SOURCE_INSTRUCTION_CODE, TransferQueryParameterConstant.RBP_SOURCE_INSTRUCTION_CODE_MOB);
-
-    // 2. Build the expected URL for the customerAccountUrl call
-    // The URL is constructed as: customerAccountUrl + "/accounts/ids?checksumList=[...]"
-    // The body is a JSON list: {"checksumList": ["CHECKSUM123"]}
-    // The body is then URL-encoded and appended as a query parameter named "checksumList"
-    String bodyJson = "{\"checksumList\":[\"CHECKSUM123\"]}";
-    String encodedBody = URLEncoder.encode(bodyJson, StandardCharsets.UTF_8);
-    String expectedAccountIdUrl = MOCK_CUSTOMER_ACCOUNT_URL + "/accounts/ids?checksumList=" + encodedBody;
-
-    // 3. Create the mock response for the account ID retrieval
+    // This is the call to customerAccountUrl
     RetrieveCustomerAccountsIdListResponse accountIdListResponse = new RetrieveCustomerAccountsIdListResponse();
-    List<InvestmentAccountIdList> accountIdList = new ArrayList<>();
-    InvestmentAccountIdList accountIdItem = new InvestmentAccountIdList();
     InvestmentAccountId accountId = new InvestmentAccountId();
     accountId.setCountryAccountCode("HK");
     accountId.setGroupMemberAccountCode("HBAP");
@@ -58,36 +26,81 @@ void createTransfers_Success() {
     accountId.setAccountProductTypeCode("SAV");
     accountId.setAccountTypeCode("01");
     accountId.setAccountCurrencyCode("HKD");
-    accountIdItem.setAccountId(accountId);
-    accountIdList.add(accountIdItem);
-    accountIdListResponse.setAccountIdList(accountIdList);
 
-    // 4. Mock the specific restClientService.get call for the account ID retrieval
-    when(mockRestClientService.get(
+    InvestmentAccountIdList accountIdList = new InvestmentAccountIdList();
+    accountIdList.setAccountId(accountId);
+    accountIdListResponse.setAccountIdList(Collections.singletonList(accountIdList));
+
+    // Build the expected URL for the customerAccountUrl call
+    String bodyJson = "{\"checksumList\":[\"CHECKSUM123\"]}";
+    String encodedBody = URLEncoder.encode(bodyJson, StandardCharsets.UTF_8);
+    String expectedAccountIdUrl = MOCK_CUSTOMER_ACCOUNT_URL + "/accounts/ids?checksumList=" + encodedBody;
+
+    // Build the expected headers for the customerAccountUrl call
+    Map<String, String> expectedHeadersForAccountIdRetrieval = new HashMap<>();
+    expectedHeadersForAccountIdRetrieval.putAll(sourceRequestHeader);
+    expectedHeadersForAccountIdRetrieval.put(HTTPRequestHeaderConstants.X_HSBC_CUSTOMER_ID, sourceRequestHeader.get(HTTPRequestHeaderConstants.X_HSBC_CUSTOMER_ID));
+    expectedHeadersForAccountIdRetrieval.put(HTTPRequestHeaderConstants.X_HSBC_CUSTOMER_ID_TYPE, "N");
+    expectedHeadersForAccountIdRetrieval.put(HttpHeaders.CONTENT_TYPE, MediaType.APPLICATION_JSON_VALUE);
+    expectedHeadersForAccountIdRetrieval.put(HTTPRequestHeaderConstants.X_HSBC_SAML, dummyToken);
+    expectedHeadersForAccountIdRetrieval.put(HTTPRequestHeaderConstants.X_HSBC_SAML3, dummyToken);
+    expectedHeadersForAccountIdRetrieval.put(HTTPRequestHeaderConstants.X_HSBC_SOURCE_INSTRUCTION_CODE, TransferQueryParameterConstant.RBP_SOURCE_INSTRUCTION_CODE_MOB);
+
+    // Mock the specific restClientService.get call for the account ID retrieval (using the injected restClientService)
+    when(restClientService.get(
             eq(expectedAccountIdUrl),
-            argThat(headers -> headers.equals(expectedHeadersForAccountIdRetrieval)), // Match headers precisely
+            argThat(headers -> headers.equals(expectedHeadersForAccountIdRetrieval)),
             eq(RetrieveCustomerAccountsIdListResponse.class),
-            eq(timeout),
-            eq(printMessageLog)
+            eq(10000),
+            eq(true)
     )).thenReturn(accountIdListResponse);
 
-    // --- Mock 2: Simulate the SRE validation call ---
-    RuleResponse sreResponse = new RuleResponse();
-    when(sreValidationService.callSreForTransferValidation(anyString(), anyString(), anyString(), anyMap()))
-            .thenReturn(sreResponse);
+    // --- Mock 2: Simulate the remote call inside sreValidationService.callSreForTransferValidation ---
+    // This is the CRITICAL missing piece for validateSreForReceivers
+    // We need to set the restClientService of the injected sreValidationService to our mock
+    ReflectionTestUtils.setField(sreValidationService, "restClientService", mockRestClientService); // <-- KEY FIX
+    // Also set the E2ETrustTokenUtil and sreUrl for the injected sreValidationService
+    ReflectionTestUtils.setField(sreValidationService, "e2ETrustTokenUtil", mockE2ETrustTokenUtil);
+    ReflectionTestUtils.setField(sreValidationService, "sreUrl", TEST_SRE_URL);
 
-    // --- Mock 3: Simulate the tradeLimitService.retrieveLimitations call ---
-    RetrieveTransferLimitResponse limitResponse = createMockTransferLimitResponse();
-    // Ensure the limits are high enough to avoid TransferLimitExceededException
-    limitResponse.getData().setAvailableTodayAmount(new BigDecimal("100000")); // > 10.5 * price
-    limitResponse.getData().setAvailableMonthToDateAmount(new BigDecimal("100000"));
-    limitResponse.getData().setAvailableYearToDateAmount(new BigDecimal("100000"));
-    when(tradeLimitService.retrieveLimitations(anyMap())).thenReturn(limitResponse);
+    // Now mock the specific POST call that sreValidationService will make
+    // The rule for sender is "dac_tokenized_gold_transfer_sender_rule"
+    String expectedSreUrl = TEST_SRE_URL;
+    // Build the expected SRE request body (this is what SreValidationServiceImpl builds)
+    SreRequest expectedSreRequest = new SreRequest();
+    expectedSreRequest.setRuleName("dac_tokenized_gold_transfer_sender_rule");
+    expectedSreRequest.setSenderId("CUST123"); // This comes from sourceRequestHeader
+    expectedSreRequest.setReceiverId("RECEIVER123"); // This comes from receiver.getReceiverCustomerNumber()
+    expectedSreRequest.setAdditionalInfo(new HashMap<>()); // Can be empty
 
-    // --- Mock 4: Simulate the retrieveGoldPrice call (for ActionRequestCode.D) ---
+    // Create the mock SRE response
+    RuleResponse mockSreResponse = new RuleResponse();
+    RuleResponseDTO mockResult = new RuleResponseDTO();
+    mockResult.setReasonCodes(Collections.emptyList());
+    mockSreResponse.setResults(mockResult);
+
+    // Mock the specific restClientService.post call inside sreValidationService
+    when(mockRestClientService.post(
+            eq(expectedSreUrl),
+            anyMap(), // Headers will be built by sreValidationService, we can use anyMap() for simplicity
+            eq(expectedSreRequest), // Match the exact SreRequest object we expect
+            eq(RuleResponse.class),
+            anyInt(),
+            anyBoolean()
+    )).thenReturn(mockSreResponse);
+
+    // Mock E2E token generation for updateHeaderforCEP (used in validateSreForReceivers)
+    when(mockE2ETrustTokenUtil.getE2ETrustToken()).thenReturn("e2e-token");
+
+    // --- Mock 3: Simulate the retrieveGoldPrice call (for ActionRequestCode.D) ---
     GoldPriceResponse goldPriceResponse = createMockGoldPriceResponse();
     when(restClientService.get(anyString(), anyMap(), eq(GoldPriceResponse.class), anyInt(), anyBoolean()))
             .thenReturn(goldPriceResponse);
+
+    // --- Mock 4: Simulate the retrieveCustomerNamesWithCinNumber call (for setSenderNames) ---
+    PartyNameResponse partyNameResponse = createMockPartyNameResponse();
+    when(restClientService.get(anyString(), anyMap(), eq(PartyNameResponse.class), anyInt(), anyBoolean()))
+            .thenReturn(partyNameResponse);
 
     // --- Mock 5: Simulate the final create transfer POST call ---
     CreateTransferResponse mockResponse = new CreateTransferResponse();
@@ -97,13 +110,13 @@ void createTransfers_Success() {
     when(restClientService.post(anyString(), anyMap(), any(CreateTransferRequest.class),
             eq(CreateTransferResponse.class), anyInt(), anyBoolean())).thenReturn(mockResponse);
 
-    // --- Mock 6: Simulate the E2E Trust Token generation (used in updateHeaderforCEP for SRE) ---
-    when(mockE2ETrustTokenUtil.getE2ETrustToken()).thenReturn("e2e-token");
-
-    // --- Mock 7: Simulate the retrieveCustomerNamesWithCinNumber call (for setSenderNames) ---
-    PartyNameResponse partyNameResponse = createMockPartyNameResponse();
-    when(restClientService.get(anyString(), anyMap(), eq(PartyNameResponse.class), anyInt(), anyBoolean()))
-            .thenReturn(partyNameResponse);
+    // --- Mock 6: Simulate the tradeLimitService.retrieveLimitations call ---
+    RetrieveTransferLimitResponse limitResponse = createMockTransferLimitResponse();
+    // Ensure the limits are high enough to avoid TransferLimitExceededException
+    limitResponse.getData().setAvailableTodayAmount(new BigDecimal("100000")); // > 10.5 * price
+    limitResponse.getData().setAvailableMonthToDateAmount(new BigDecimal("100000"));
+    limitResponse.getData().setAvailableYearToDateAmount(new BigDecimal("100000"));
+    when(tradeLimitService.retrieveLimitations(anyMap())).thenReturn(limitResponse);
 
     // Act
     CreateTransferResponse result = tradeTransferService.createTransfers(sourceRequestHeader, request);
@@ -114,19 +127,24 @@ void createTransfers_Success() {
 
     // Verify all dependencies were called as expected
     verify(tradeLimitService, times(1)).retrieveLimitations(anyMap());
-    verify(sreValidationService, times(1)).callSreForTransferValidation(anyString(), anyString(), anyString(), anyMap());
     verify(restClientService, times(1)).get(
             eq(expectedAccountIdUrl),
             argThat(headers -> headers.equals(expectedHeadersForAccountIdRetrieval)),
             eq(RetrieveCustomerAccountsIdListResponse.class),
-            eq(timeout),
-            eq(printMessageLog)
+            eq(10000),
+            eq(true)
     );
     verify(restClientService, times(1)).get(anyString(), anyMap(), eq(GoldPriceResponse.class), anyInt(), anyBoolean());
     verify(restClientService, times(1)).get(anyString(), anyMap(), eq(PartyNameResponse.class), anyInt(), anyBoolean());
     verify(restClientService, times(1)).post(anyString(), anyMap(), any(CreateTransferRequest.class),
             eq(CreateTransferResponse.class), anyInt(), anyBoolean());
-    verify(mockE2ETrustTokenUtil, times(1)).getE2ETrustToken(); // Called once for SRE, once for CEP? We have two calls in the code
-    // Note: We have one call for SRE and one for CEP (retrieveCustomerNamesWithCinNumber), so it should be called twice
-    verify(mockE2ETrustTokenUtil, times(2)).getE2ETrustToken();
+    verify(mockRestClientService, times(1)).post(
+            eq(expectedSreUrl),
+            anyMap(),
+            eq(expectedSreRequest),
+            eq(RuleResponse.class),
+            anyInt(),
+            anyBoolean()
+    );
+    verify(mockE2ETrustTokenUtil, times(2)).getE2ETrustToken(); // Once for SRE, once for CEP
 }
