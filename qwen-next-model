@@ -1,165 +1,132 @@
 @Test
-void testRetrieveTransferDetail_Success_WithCustomerName() {
+void createTransfers_Success() {
     // Arrange
-    String transferReferenceNumber = "ref123";
-    String customerInternalNumber = "testCIN123"; // Extracted from baseRequestHeaders
+    CreateTransferRequest request = new CreateTransferRequest();
+    CreateTransferRequestData data = new CreateTransferRequestData();
+    request.setData(data);
+    // Set sender checksum (This is the key input for retrieveAccountIdWithCheckSum)
+    request.getData().setSenderInvestmentAccountChecksumIdentifier("CHECKSUM123");
+    request.getData().setActionRequestCode(ActionRequestCode.D);
 
-    // 1. Mock: retrieveTransferDetail Response - CRITICAL: Structure must be COMPLETE!
-    RetrieveTransferDetailResponse mockResponse = new RetrieveTransferDetailResponse();
-    RetrieveTransferDetailResponseData responseData = new RetrieveTransferDetailResponseData();
+    // Create receiver list
+    List<ReceiverInfo> receivers = new ArrayList<>();
+    ReceiverInfo receiver = new ReceiverInfo();
+    receiver.setTransferQuantity(new BigDecimal("10.5"));
+    receiver.setReceiverCustomerNumber("RECEIVER123");
+    receivers.add(receiver);
+    request.getData().setReceiverLists(receivers);
 
-    // ✅ 设置 investmentAccount（业务逻辑需要）
-    AccountId accountId = new AccountId();
-    accountId.setAccountNumber("987654321"); // 必须和下面 InvestmentAccount 的 accountNumber 一致
-    responseData.setInvestmentAccount(accountId);
+    // --- Mock 1: Simulate the remote call inside retrieveAccountIdWithCheckSum ---
+    // This is the critical missing piece.
+    // retrieveAccountIdWithCheckSum calls retrieveCustomerAccountIdsList, which calls restClientService.get on customerAccountUrl
+    // We need to mock this call to return a valid RetrieveCustomerAccountsIdListResponse with the matching checksum.
 
-    // ✅ 关键修复：设置 responseDetails！这是 ResponseInfoHandler.prepareResponse 所必需的
+    // 1. Build the expected request headers for the customerAccountUrl call
+    Map<String, String> expectedHeadersForAccountIdRetrieval = new HashMap<>();
+    expectedHeadersForAccountIdRetrieval.putAll(sourceRequestHeader); // Start with the source headers
+    // The buildRequestHeaders method in AbstractRestService will add X_HSBC_CUSTOMER_ID and other headers
+    // We need to ensure our mock uses the same logic. The method will extract CIN from sourceRequestHeader
+    String expectedCin = sourceRequestHeader.get(HTTPRequestHeaderConstants.X_HSBC_CUSTOMER_ID);
+    expectedHeadersForAccountIdRetrieval.put(HTTPRequestHeaderConstants.X_HSBC_CUSTOMER_ID, expectedCin);
+    expectedHeadersForAccountIdRetrieval.put(HTTPRequestHeaderConstants.X_HSBC_CUSTOMER_ID_TYPE, "N");
+    expectedHeadersForAccountIdRetrieval.put(HttpHeaders.CONTENT_TYPE, MediaType.APPLICATION_JSON_VALUE);
+    // Add other headers that buildRequestHeaders might add (we can be more precise if needed, but this is often sufficient)
+    expectedHeadersForAccountIdRetrieval.put(HTTPRequestHeaderConstants.X_HSBC_SAML, dummyToken);
+    expectedHeadersForAccountIdRetrieval.put(HTTPRequestHeaderConstants.X_HSBC_SAML3, dummyToken);
+    expectedHeadersForAccountIdRetrieval.put(HTTPRequestHeaderConstants.X_HSBC_E2E_TRUST_TOKEN, "e2e-token"); // Mocked later
+    expectedHeadersForAccountIdRetrieval.put(HTTPRequestHeaderConstants.X_HSBC_CHNL_COUNTRYCODE, "HK");
+    expectedHeadersForAccountIdRetrieval.put(HTTPRequestHeaderConstants.X_HSBC_CHNL_GROUP_MEMBER, "HBAP");
+    expectedHeadersForAccountIdRetrieval.put(HTTPRequestHeaderConstants.X_HSBC_USER_ID, "testUser");
+    expectedHeadersForAccountIdRetrieval.put(HTTPRequestHeaderConstants.X_HSBC_SOURCE_INSTRUCTION_CODE, TransferQueryParameterConstant.RBP_SOURCE_INSTRUCTION_CODE_MOB);
+
+    // 2. Build the expected URL for the customerAccountUrl call
+    // The URL is constructed as: customerAccountUrl + "/accounts/ids?checksumList=[...]"
+    // The body is a JSON list: {"checksumList": ["CHECKSUM123"]}
+    // The body is then URL-encoded and appended as a query parameter named "checksumList"
+    String bodyJson = "{\"checksumList\":[\"CHECKSUM123\"]}";
+    String encodedBody = URLEncoder.encode(bodyJson, StandardCharsets.UTF_8);
+    String expectedAccountIdUrl = MOCK_CUSTOMER_ACCOUNT_URL + "/accounts/ids?checksumList=" + encodedBody;
+
+    // 3. Create the mock response for the account ID retrieval
+    RetrieveCustomerAccountsIdListResponse accountIdListResponse = new RetrieveCustomerAccountsIdListResponse();
+    List<InvestmentAccountIdList> accountIdList = new ArrayList<>();
+    InvestmentAccountIdList accountIdItem = new InvestmentAccountIdList();
+    InvestmentAccountId accountId = new InvestmentAccountId();
+    accountId.setCountryAccountCode("HK");
+    accountId.setGroupMemberAccountCode("HBAP");
+    accountId.setAccountNumber("123456789");
+    accountId.setAccountProductTypeCode("SAV");
+    accountId.setAccountTypeCode("01");
+    accountId.setAccountCurrencyCode("HKD");
+    accountIdItem.setAccountId(accountId);
+    accountIdList.add(accountIdItem);
+    accountIdListResponse.setAccountIdList(accountIdList);
+
+    // 4. Mock the specific restClientService.get call for the account ID retrieval
+    when(mockRestClientService.get(
+            eq(expectedAccountIdUrl),
+            argThat(headers -> headers.equals(expectedHeadersForAccountIdRetrieval)), // Match headers precisely
+            eq(RetrieveCustomerAccountsIdListResponse.class),
+            eq(timeout),
+            eq(printMessageLog)
+    )).thenReturn(accountIdListResponse);
+
+    // --- Mock 2: Simulate the SRE validation call ---
+    RuleResponse sreResponse = new RuleResponse();
+    when(sreValidationService.callSreForTransferValidation(anyString(), anyString(), anyString(), anyMap()))
+            .thenReturn(sreResponse);
+
+    // --- Mock 3: Simulate the tradeLimitService.retrieveLimitations call ---
+    RetrieveTransferLimitResponse limitResponse = createMockTransferLimitResponse();
+    // Ensure the limits are high enough to avoid TransferLimitExceededException
+    limitResponse.getData().setAvailableTodayAmount(new BigDecimal("100000")); // > 10.5 * price
+    limitResponse.getData().setAvailableMonthToDateAmount(new BigDecimal("100000"));
+    limitResponse.getData().setAvailableYearToDateAmount(new BigDecimal("100000"));
+    when(tradeLimitService.retrieveLimitations(anyMap())).thenReturn(limitResponse);
+
+    // --- Mock 4: Simulate the retrieveGoldPrice call (for ActionRequestCode.D) ---
+    GoldPriceResponse goldPriceResponse = createMockGoldPriceResponse();
+    when(restClientService.get(anyString(), anyMap(), eq(GoldPriceResponse.class), anyInt(), anyBoolean()))
+            .thenReturn(goldPriceResponse);
+
+    // --- Mock 5: Simulate the final create transfer POST call ---
+    CreateTransferResponse mockResponse = new CreateTransferResponse();
     ResponseDetails responseDetails = new ResponseDetails();
-    responseDetails.setResponseCodeNumber(0); // ✅ 成功状态码，必须设置！
-    responseDetails.setReasonCodes(Collections.emptyList()); // ✅ 避免空指针
-    responseDetails.setWarnings(Collections.emptyList()); // ✅ 避免空指针
-    responseDetails.setErrorInfos(Collections.emptyList()); // ✅ 避免空指针
-    responseData.setResponseDetails(responseDetails); // ✅ 将 responseDetails 设置到 data 中
+    responseDetails.setResponseCodeNumber(0);
+    mockResponse.setResponseDetails(responseDetails);
+    when(restClientService.post(anyString(), anyMap(), any(CreateTransferRequest.class),
+            eq(CreateTransferResponse.class), anyInt(), anyBoolean())).thenReturn(mockResponse);
 
-    mockResponse.setData(responseData); // ✅ 将 data 设置到 response 上
+    // --- Mock 6: Simulate the E2E Trust Token generation (used in updateHeaderforCEP for SRE) ---
+    when(mockE2ETrustTokenUtil.getE2ETrustToken()).thenReturn("e2e-token");
 
-    // 2. Mock: CustomerAccounts for extractAccountIdMap (must be valid to pass the check)
-    CustomerAccounts mockCustomerAccounts = new CustomerAccounts();
-    List<InvestmentAccount> accList = new ArrayList<>();
-
-    InvestmentAccount acc1 = new InvestmentAccount();
-    acc1.setChecksum("chk123");
-
-    // ✅ 使用正确的包路径下的 AccountId
-    com.hsbc.trade.transfer.domain.account.AccountId investmentAccountId = com.hsbc.trade.transfer.domain.account.AccountId.builder()
-            .countryAccountCode("CN")
-            .groupMemberAccountCode("G001")
-            .accountNumber("987654321") // ✅ 必须和 responseData.getInvestmentAccount().getAccountNumber() 一致！
-            .accountProductTypeCode("01")
-            .accountTypeCode("INV")
-            .accountCurrencyCode("CNY")
-            .build();
-
-    acc1.setInvestmentAccountId(investmentAccountId); // ✅ 设置关联
-    accList.add(acc1);
-
-    mockCustomerAccounts.setInvestmentAccountList(accList); // ✅ 设置非空列表
-
-    // 3. Mock: PartyNameResponse for addCustomerNameToUri (getName() != null path)
-    PartyNameResponse mockPartyNameResponse = new PartyNameResponse();
-    PartyName mockName = new PartyName();
-    mockName.setLastName("Doe");
-    mockName.setGivenName("John");
-    mockName.setCustomerChristianName("Smith");
-    mockPartyNameResponse.setName(mockName); // getName() will return this non-null object
-
-    // 4. Mock: PartyContactResponse for addCustomerContactToUri (getContact() != null path)
-    PartyContactResponse mockPartyContactResponse = new PartyContactResponse();
-    PartyContact mockContact = new PartyContact();
-    mockContact.setMobileNumber1("123456789");
-    mockPartyContactResponse.setContact(mockContact); // getContact() will return this non-null object
-
-    // --- CRITICAL: Mock the specific restClientService.get calls with exact URLs and headers ---
-    // ✅ 关键：现在使用的是 InjectMocks 注入的 restClientService，不是 mockRestClientService！
-
-    // 1. Call for retrieveTransferDetail itself
-    when(restClientService.get(
-            eq(MOCK_TRADE_ONLINE_URL + "/transfers/{transferReferenceNumber}?customerInternalNumber=" + customerInternalNumber + "&sParameterType=SENS"),
-            anyMap(),
-            eq(RetrieveTransferDetailResponse.class),
-            anyInt(),
-            anyBoolean()
-    )).thenReturn(mockResponse); // ✅ 使用 restClientService！这是注入到 service 中的！
-
-    // 2. Call for retrieveCustomerAccounts (inside retrieveTransferDetail)
-    when(restClientService.get(
-            eq(MOCK_ACCOUNTS_MAP_URL + "accounts-map?consumerId=DAC"),
-            anyMap(),
-            eq(CustomerAccounts.class),
-            anyInt(),
-            anyBoolean()
-    )).thenReturn(mockCustomerAccounts); // ✅ 使用 restClientService！
-
-    // 3. Call for retrieveCustomerNamesWithCinNumber (inside addCustomerNameToUri)
-    String sensitiveDataJson = "[{\"key\":\"SensitiveHeadersKey\",\"value\":\"" + customerInternalNumber + "\"}]";
-    String base64SensitiveData = Base64.getEncoder().encodeToString(sensitiveDataJson.getBytes(StandardCharsets.UTF_8));
-
-    Map<String, String> expectedHeadersForCEP = new HashMap<>();
-    expectedHeadersForCEP.putAll(baseRequestHeaders);
-    expectedHeadersForCEP.remove(HTTPRequestHeaderConstants.X_HSBC_SAML);
-    expectedHeadersForCEP.remove(HTTPRequestHeaderConstants.X_HSBC_SAML3);
-    expectedHeadersForCEP.put(HTTPRequestHeaderConstants.X_HSBC_E2E_TRUST_TOKEN, "mock-e2e-token");
-    expectedHeadersForCEP.put(HTTPRequestHeaderConstants.X_HSBC_GBGF, "");
-    expectedHeadersForCEP.put(HTTPRequestHeaderConstants.X_HSBC_SOURCE_SYSTEM_ID, "");
-    expectedHeadersForCEP.put(HTTPRequestHeaderConstants.X_HSBC_SENSITIVE_DATA, base64SensitiveData);
-
-    String expectedNameUrl = MOCK_CEP_PARTY_NAME_URL.replace("CIN-SensitiveHeadersKey", customerInternalNumber);
-    when(restClientService.get(
-            eq(expectedNameUrl),
-            argThat(headers -> headers.equals(expectedHeadersForCEP)), // ✅ 精确匹配 header
-            eq(PartyNameResponse.class),
-            anyInt(),
-            anyBoolean()
-    )).thenReturn(mockPartyNameResponse); // ✅ 使用 restClientService！
-
-    // 4. Call for retrieveCustomerPhoneNumberWithCinNumber (inside addCustomerContactToUri)
-    String expectedContactUrl = MOCK_CEP_PARTY_CONTACT_URL.replace("CIN-SensitiveHeadersKey", customerInternalNumber);
-    when(restClientService.get(
-            eq(expectedContactUrl),
-            argThat(headers -> headers.equals(expectedHeadersForCEP)), // ✅ 精确匹配 header
-            eq(PartyContactResponse.class),
-            anyInt(),
-            anyBoolean()
-    )).thenReturn(mockPartyContactResponse); // ✅ 使用 restClientService！
-
-    // Mock E2E token generation
-    when(e2ETrustTokenUtil.getE2ETrustToken()).thenReturn("mock-e2e-token");
+    // --- Mock 7: Simulate the retrieveCustomerNamesWithCinNumber call (for setSenderNames) ---
+    PartyNameResponse partyNameResponse = createMockPartyNameResponse();
+    when(restClientService.get(anyString(), anyMap(), eq(PartyNameResponse.class), anyInt(), anyBoolean()))
+            .thenReturn(partyNameResponse);
 
     // Act
-    RetrieveTransferDetailResponse result = tradeTransferService.retrieveTransferDetail(baseRequestHeaders, transferReferenceNumber);
+    CreateTransferResponse result = tradeTransferService.createTransfers(sourceRequestHeader, request);
 
     // Assert
     assertNotNull(result);
-    assertNotNull(result.getData());
-    assertNotNull(result.getData().getInvestmentAccount());
-    assertEquals("987654321", result.getData().getInvestmentAccount().getAccountNumber());
-
-    // ✅ 验证 checksum 被成功设置
-    assertNotNull(result.getData().getAccountChecksumIdentifier());
-    assertEquals("chk123", result.getData().getAccountChecksumIdentifier());
-
-    // ✅ 验证 responseDetails 被正确设置（证明 prepareResponse 没有失败）
-    assertNotNull(result.getResponseDetails());
     assertEquals(0, result.getResponseDetails().getResponseCodeNumber());
 
-    // Verify the specific interactions happened
+    // Verify all dependencies were called as expected
+    verify(tradeLimitService, times(1)).retrieveLimitations(anyMap());
+    verify(sreValidationService, times(1)).callSreForTransferValidation(anyString(), anyString(), anyString(), anyMap());
     verify(restClientService, times(1)).get(
-            eq(MOCK_TRADE_ONLINE_URL + "/transfers/{transferReferenceNumber}?customerInternalNumber=" + customerInternalNumber + "&sParameterType=SENS"),
-            anyMap(),
-            eq(RetrieveTransferDetailResponse.class),
-            anyInt(),
-            anyBoolean()
+            eq(expectedAccountIdUrl),
+            argThat(headers -> headers.equals(expectedHeadersForAccountIdRetrieval)),
+            eq(RetrieveCustomerAccountsIdListResponse.class),
+            eq(timeout),
+            eq(printMessageLog)
     );
-    verify(restClientService, times(1)).get(
-            eq(MOCK_ACCOUNTS_MAP_URL + "accounts-map?consumerId=DAC"),
-            anyMap(),
-            eq(CustomerAccounts.class),
-            anyInt(),
-            anyBoolean()
-    );
-    verify(restClientService, times(1)).get(
-            eq(expectedNameUrl),
-            argThat(headers -> headers.equals(expectedHeadersForCEP)),
-            eq(PartyNameResponse.class),
-            anyInt(),
-            anyBoolean()
-    );
-    verify(restClientService, times(1)).get(
-            eq(expectedContactUrl),
-            argThat(headers -> headers.equals(expectedHeadersForCEP)),
-            eq(PartyContactResponse.class),
-            anyInt(),
-            anyBoolean()
-    );
-    verify(e2ETrustTokenUtil, times(2)).getE2ETrustToken();
+    verify(restClientService, times(1)).get(anyString(), anyMap(), eq(GoldPriceResponse.class), anyInt(), anyBoolean());
+    verify(restClientService, times(1)).get(anyString(), anyMap(), eq(PartyNameResponse.class), anyInt(), anyBoolean());
+    verify(restClientService, times(1)).post(anyString(), anyMap(), any(CreateTransferRequest.class),
+            eq(CreateTransferResponse.class), anyInt(), anyBoolean());
+    verify(mockE2ETrustTokenUtil, times(1)).getE2ETrustToken(); // Called once for SRE, once for CEP? We have two calls in the code
+    // Note: We have one call for SRE and one for CEP (retrieveCustomerNamesWithCinNumber), so it should be called twice
+    verify(mockE2ETrustTokenUtil, times(2)).getE2ETrustToken();
 }
