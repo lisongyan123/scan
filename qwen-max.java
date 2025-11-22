@@ -2,7 +2,8 @@
 void testRetrieveTransferDetail_Success_WithCustomerName() {
     // Arrange
     String transferReferenceNumber = "ref123";
-    String customerInternalNumber = "testCIN123"; // Extracted from baseRequestHeaders
+    // 从 baseRequestHeaders 中获取 customerInternalNumber，实际值是 "TESTcin123"
+    String customerInternalNumber = baseRequestHeaders.get(HTTPRequestHeaderConstants.X_HSBC_CUSTOMER_ID);
 
     // 1. Mock: retrieveTransferDetail Response
     RetrieveTransferDetailResponse mockResponse = new RetrieveTransferDetailResponse();
@@ -47,13 +48,14 @@ void testRetrieveTransferDetail_Success_WithCustomerName() {
     mockContact.setMobileNumber1("123456789");
     mockPartyContactResponse.setContact(mockContact);
 
-    // ✅ 【核心修复】构造与实际调用完全一致的 URI（transferReferenceNumber 已替换）
+    // ✅ 【核心修复】构造与实际调用完全一致的 URI
+    // 实际URL: "http://mock-trade-online/transfers/ref123?customerInternalNumber=TESTcin123&sParameterType=S"
     String expectedTransferDetailUri = MOCK_TRADE_ONLINE_URL + "/transfers/" + transferReferenceNumber +
-            "?customerInternalNumber=" + customerInternalNumber + "&sParameterType=SENS";
+            "?customerInternalNumber=" + customerInternalNumber + "&sParameterType=S"; // 注意这里是 S 而不是 SENS
 
-    // 1. Mock retrieveTransferDetail call —— 使用已解析的具体 URI
+    // 1. Mock retrieveTransferDetail call —— 使用精确匹配的 URI
     when(mockRestClientService.get(
-            eq(expectedTransferDetailUri), // ✅ 使用 actual URI，不再是模板
+            eq(expectedTransferDetailUri), // ✅ 精确匹配实际调用的 URI
             anyMap(),
             eq(RetrieveTransferDetailResponse.class),
             anyInt(),
@@ -115,9 +117,9 @@ void testRetrieveTransferDetail_Success_WithCustomerName() {
     assertNotNull(result.getResponseDetails());
     assertEquals(0, result.getResponseDetails().getResponseCodeNumber());
 
-    // Verify interactions —— 同样使用 actual URI
+    // Verify interactions —— 同样使用精确匹配的 URI
     verify(mockRestClientService, times(1)).get(
-            eq(expectedTransferDetailUri), // ✅ 验证使用的是具体 URI
+            eq(expectedTransferDetailUri), // ✅ 验证使用的是精确匹配的 URI
             anyMap(),
             eq(RetrieveTransferDetailResponse.class),
             anyInt(),
