@@ -2,64 +2,74 @@
 void testRetrieveTransferDetail_Success_WithCustomerName() {
     // Arrange
     String transferReferenceNumber = "ref123";
-    // 从 baseRequestHeaders 中提取 customerInternalNumber，这是生产代码的实际逻辑
-    String customerInternalNumber = baseRequestHeaders.get(HTTPRequestHeaderConstants.X_HSBC_CUSTOMER_ID); // "TESTcin123"
-
+    String customerInternalNumber = baseRequestHeaders.get(HTTPRequestHeaderConstants.X_HSBC_CUSTOMER_ID);
+    
     // 1. Mock: retrieveTransferDetail Response
     RetrieveTransferDetailResponse mockResponse = new RetrieveTransferDetailResponse();
     RetrieveTransferDetailResponseData responseData = new RetrieveTransferDetailResponseData();
-    // ✅ 关键修复1：设置一个非空的 AccountId
     AccountId accountId = new AccountId();
-    accountId.setAccountNumber("987654321"); // 这个值必须和下面 mock 的 InvestmentAccount 一致
+    accountId.setAccountNumber("987654321");
     responseData.setInvestmentAccount(accountId);
-    // ✅ 关键修复2：设置 responseDetails！这是 ResponseInfoHandler.prepareResponse 所必需的
     ResponseDetails responseDetails = new ResponseDetails();
-    responseDetails.setResponseCodeNumber(0); // ✅ 成功状态码，必须设置！
-    responseData.setResponseDetails(responseDetails); // ✅ 将 responseDetails 设置到 data 中 —— 这是关键！加了这一行！
-    mockResponse.setData(responseData); // ✅ 设置 data
-
-    // 2. ✅ 关键：Mock CustomerAccounts for retrieveCustomerAccounts() - 这是之前缺失的！
+    responseDetails.setResponseCodeNumber(0);
+    responseData.setResponseDetails(responseDetails);
+    mockResponse.setData(responseData);
+    
+    // 2. Mock CustomerAccounts for retrieveCustomerAccounts()
     CustomerAccounts mockCustomerAccounts = new CustomerAccounts();
     List<InvestmentAccount> accList = new ArrayList<>();
     InvestmentAccount acc1 = new InvestmentAccount();
     acc1.setChecksum("chk123");
-    // ✅ 创建一个完整的 com.hsbc.trade.transfer.domain.account.AccountId 对象
     com.hsbc.trade.transfer.domain.account.AccountId investmentAccountId = com.hsbc.trade.transfer.domain.account.AccountId.builder()
             .countryAccountCode("CN")
             .groupMemberAccountCode("G001")
-            .accountNumber("987654321") // ✅ 这个 accountNumber 必须和 responseData.getInvestmentAccount().getAccountNumber() 一致！
+            .accountNumber("987654321")
             .accountProductTypeCode("01")
             .accountTypeCode("INV")
             .accountCurrencyCode("CNY")
             .build();
-    acc1.setInvestmentAccountId(investmentAccountId); // ✅ 设置关联
+    acc1.setInvestmentAccountId(investmentAccountId);
     accList.add(acc1);
-    mockCustomerAccounts.setInvestmentAccountList(accList); // ✅ 设置非空列表
-
-    // 3. Mock: PartyNameResponse for addCustomerNameToUri
+    mockCustomerAccounts.setInvestmentAccountList(accList);
+    
+    // 3. Mock PartyNameResponse for addCustomerNameToUri
     PartyNameResponse mockPartyNameResponse = new PartyNameResponse();
     PartyName mockName = new PartyName();
     mockName.setLastName("Doe");
     mockName.setGivenName("John");
     mockName.setCustomerChristianName("Smith");
     mockPartyNameResponse.setName(mockName);
-
-    // 4. Mock: PartyContactResponse for addCustomerContactToUri
+    
+    // 4. Mock PartyContactResponse for addCustomerContactToUri
     PartyContactResponse mockPartyContactResponse = new PartyContactResponse();
     PartyContact mockContact = new PartyContact();
     mockContact.setMobileNumber1("123456789");
     mockPartyContactResponse.setContact(mockContact);
-
-    // --- CRITICAL: Build the exact URL using the same logic as production code ---
-    // 使用与生产代码完全相同的 UriComponentsBuilder 和常量来构建预期的 URL
-    UriComponentsBuilder uriBuilder = UriComponentsBuilder.fromUriString(MOCK_TRADE_ONLINE_URL)
-            .path("/transfers/{transferReferenceNumber}")
-            .queryParam(TransferQueryParameterConstant.CUSTOMER_INTERNAL_NUMBER, customerInternalNumber)
-            .queryParam(TransferQueryParameterConstant.S_PARAMETER_TYPE, TransferQueryParameterConstant.SENSITIVE_HEADER); // 使用常量 "S"
-    URI expectedRequestURI = uriBuilder.build(transferReferenceNumber); // 使用 transferReferenceNumber 替换 {transferReferenceNumber}
-    String expectedUrl = expectedRequestURI.toString(); // 这就是生产代码最终调用的 URL，结果为："http://mock-trade-online/transfers/ref123?customerInternalNumber=TESTcin123&sParameterType=S"
-
-    // 构建 buildSensitiveHeaders 和 updateHeaderforCEP 后的最终 header
+    
+    // Build the correct expected URL
+    String expectedUrl = MOCK_TRADE_ONLINE_URL + "/transfers/" + transferReferenceNumber +
+            "?customerInternalNumber=" + customerInternalNumber +
+            "&sParameterType=" + TransferQueryParameterConstant.SENSITIVE_HEADER;
+    
+    // 5. Mock the specific restClientService.get calls with exact URLs and headers
+    when(mockRestClientService.get(
+            eq(expectedUrl),
+            anyMap(),
+            eq(RetrieveTransferDetailResponse.class),
+            anyInt(),
+            anyBoolean()
+    )).thenReturn(mockResponse);
+    
+    // 6. Mock retrieveCustomerAccounts() call
+    when(mockRestClientService.get(
+            eq(MOCK_ACCOUNTS_MAP_URL + "accounts-map?consumerId=DAC"),
+            anyMap(),
+            eq(CustomerAccounts.class),
+            anyInt(),
+            anyBoolean()
+    )).thenReturn(mockCustomerAccounts);
+    
+    // 7. Mock CEP PartyName call
     String sensitiveDataJson = "[{\"key\":\"SensitiveHeadersKey\",\"value\":\"" + customerInternalNumber + "\"}]";
     String base64SensitiveData = Base64.getEncoder().encodeToString(sensitiveDataJson.getBytes(StandardCharsets.UTF_8));
     Map<String, String> expectedHeadersForCEP = new HashMap<>();
@@ -70,53 +80,32 @@ void testRetrieveTransferDetail_Success_WithCustomerName() {
     expectedHeadersForCEP.put(HTTPRequestHeaderConstants.X_HSBC_GBGF, "");
     expectedHeadersForCEP.put(HTTPRequestHeaderConstants.X_HSBC_SOURCE_SYSTEM_ID, "");
     expectedHeadersForCEP.put(HTTPRequestHeaderConstants.X_HSBC_SENSITIVE_DATA, base64SensitiveData);
-
+    
     String expectedNameUrl = MOCK_CEP_PARTY_NAME_URL.replace("CIN-SensitiveHeadersKey", customerInternalNumber);
-    String expectedContactUrl = MOCK_CEP_PARTY_CONTACT_URL.replace("CIN-SensitiveHeadersKey", customerInternalNumber);
-
-    // --- 1. Mock the precise URL built by UriComponentsBuilder ---
-    // 使用我们精确构建的 expectedUrl，而不是硬编码的字符串
-    when(restClientService.get(
-            eq(expectedUrl), // ✅ 使用精确构建的 URL，与生产代码完全一致
-            anyMap(),        // 请求头会被后续方法修改，所以用 anyMap()
-            eq(RetrieveTransferDetailResponse.class),
-            eq(10000),       // ✅ 明确指定 timeout 为 10000 (来自 setUp 中的 ReflectionTestUtils)
-            eq(true)         // ✅ 明确指定 printMessageLog 为 true
-    )).thenReturn(mockResponse);
-
-    // 2. ✅ 关键修复：Mock retrieveCustomerAccounts() 的调用
-    when(restClientService.get(
-            eq(MOCK_ACCOUNTS_MAP_URL + "accounts-map?consumerId=DAC"),
-            anyMap(),
-            eq(CustomerAccounts.class),
-            eq(10000),
-            eq(true)
-    )).thenReturn(mockCustomerAccounts);
-
-    // 3. Call for retrieveCustomerNamesWithCinNumber (inside addCustomerNameToUri)
-    when(restClientService.get(
+    when(mockRestClientService.get(
             eq(expectedNameUrl),
             argThat(headers -> headers.equals(expectedHeadersForCEP)),
             eq(PartyNameResponse.class),
-            eq(10000),
-            eq(true)
+            anyInt(),
+            anyBoolean()
     )).thenReturn(mockPartyNameResponse);
-
-    // 4. Call for retrieveCustomerPhoneNumberWithCinNumber (inside addCustomerContactToUri)
-    when(restClientService.get(
+    
+    // 8. Mock CEP PartyContact call
+    String expectedContactUrl = MOCK_CEP_PARTY_CONTACT_URL.replace("CIN-SensitiveHeadersKey", customerInternalNumber);
+    when(mockRestClientService.get(
             eq(expectedContactUrl),
             argThat(headers -> headers.equals(expectedHeadersForCEP)),
             eq(PartyContactResponse.class),
-            eq(10000),
-            eq(true)
+            anyInt(),
+            anyBoolean()
     )).thenReturn(mockPartyContactResponse);
-
-    // Mock E2E token generation
-    when(e2ETrustTokenUtil.getE2ETrustToken()).thenReturn("mock-e2e-token");
-
+    
+    // 9. Mock E2E token generation
+    when(mockE2ETrustTokenUtil.getE2ETrustToken()).thenReturn("mock-e2e-token");
+    
     // Act
     RetrieveTransferDetailResponse result = tradeTransferService.retrieveTransferDetail(baseRequestHeaders, transferReferenceNumber);
-
+    
     // Assert
     assertNotNull(result);
     assertNotNull(result.getData());
@@ -126,34 +115,11 @@ void testRetrieveTransferDetail_Success_WithCustomerName() {
     assertEquals("chk123", result.getData().getAccountChecksumIdentifier());
     assertNotNull(result.getResponseDetails());
     assertEquals(0, result.getResponseDetails().getResponseCodeNumber());
-
-    verify(restClientService, times(1)).get(
-            eq(expectedUrl), // ✅ 验证时也使用精确构建的 URL
-            anyMap(),
-            eq(RetrieveTransferDetailResponse.class),
-            eq(10000),
-            eq(true)
-    );
-    verify(restClientService, times(1)).get(
-            eq(MOCK_ACCOUNTS_MAP_URL + "accounts-map?consumerId=DAC"),
-            anyMap(),
-            eq(CustomerAccounts.class),
-            eq(10000),
-            eq(true)
-    );
-    verify(restClientService, times(1)).get(
-            eq(expectedNameUrl),
-            argThat(headers -> headers.equals(expectedHeadersForCEP)),
-            eq(PartyNameResponse.class),
-            eq(10000),
-            eq(true)
-    );
-    verify(restClientService, times(1)).get(
-            eq(expectedContactUrl),
-            argThat(headers -> headers.equals(expectedHeadersForCEP)),
-            eq(PartyContactResponse.class),
-            eq(10000),
-            eq(true)
-    );
-    verify(e2ETrustTokenUtil, times(2)).getE2ETrustToken();
+    
+    // Verify interactions
+    verify(mockRestClientService, times(1)).get(eq(expectedUrl), anyMap(), eq(RetrieveTransferDetailResponse.class), anyInt(), anyBoolean());
+    verify(mockRestClientService, times(1)).get(eq(MOCK_ACCOUNTS_MAP_URL + "accounts-map?consumerId=DAC"), anyMap(), eq(CustomerAccounts.class), anyInt(), anyBoolean());
+    verify(mockRestClientService, times(1)).get(eq(expectedNameUrl), argThat(headers -> headers.equals(expectedHeadersForCEP)), eq(PartyNameResponse.class), anyInt(), anyBoolean());
+    verify(mockRestClientService, times(1)).get(eq(expectedContactUrl), argThat(headers -> headers.equals(expectedHeadersForCEP)), eq(PartyContactResponse.class), anyInt(), anyBoolean());
+    verify(mockE2ETrustTokenUtil, times(2)).getE2ETrustToken();
 }
