@@ -1,11 +1,14 @@
-import static org.junit.jupiter.api.Assertions.*; // 根据你使用的 JUnit 版本选择
+import static org.junit.jupiter.api.Assertions.*;
+import static org.mockito.ArgumentMatchers.*;
 import static org.mockito.Mockito.*;
 
-import com.hsbc.trade.transfer.domain.account.CustomerAccounts;
-import com.hsbc.trade.transfer.domain.account.InvestmentAccount;
-import com.hsbc.trade.transfer.domain.account.InvestmentAccountId; // 假设存在这个类
+import com.hsbc.trade.transfer.domain.account.*;
+import com.hsbc.trade.transfer.domain.cep.PartyContactResponse;
+import com.hsbc.trade.transfer.domain.cep.PartyNameResponse;
 import com.hsbc.trade.transfer.retrievetransferlist.RetrieveTransferListResponse;
-import com.hsbc.trade.transfer.service.AbstractRestService; // 或者直接 Mock TradeTransferServiceImpl
+import com.hsbc.trade.transfer.retrievetransferlist.RetrieveTransferListResponseData;
+import com.hsbc.trade.transfer.service.TradeTransferService;
+import com.hsbc.trade.service.RestClientService; // 确保导入正确
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
@@ -14,28 +17,18 @@ import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.web.util.UriComponentsBuilder;
 
-import java.util.Arrays;
-import java.util.HashMap;
-import java.util.List;
-import java.util.Map;
+import java.util.*;
 
 @ExtendWith(MockitoExtension.class)
 class TradeTransferServiceImplTest {
 
     @Mock
-    private RestClientService restClientService; // Mock 依赖项
+    private RestClientService restClientService;
 
-    @Mock
-    private E2ETrustTokenUtil e2ETrustTokenUtil; // 如果需要
-
-    @Mock
-    private DuplicateSubmitPreventionService duplicateSubmitPreventionService; // 如果需要
-
-    @Mock
-    private TradeLimitServiceImpl tradeLimitService; // 如果需要
+    // ... 其他 Mocks 如需要 ...
 
     @InjectMocks
-    private TradeTransferServiceImpl tradeTransferService; // 被测试的服务
+    private TradeTransferServiceImpl tradeTransferService; // 继承自 AbstractRestService
 
     private Map<String, String> requestHeaders;
     private String transferStatusCode;
@@ -47,143 +40,188 @@ class TradeTransferServiceImplTest {
     @BeforeEach
     void setUp() {
         requestHeaders = new HashMap<>();
-        requestHeaders.put("some-header-key", "some-header-value");
-        transferStatusCode = "someStatus";
-        checksumIdentifiers = Arrays.asList("checksum1", "checksum2"); // 传递给方法的参数
+        requestHeaders.put("X-HSBC-CUSTOMER-ID", "TEST_CIN_12345"); // 示例 CIN
+        transferStatusCode = "PENDING";
+        checksumIdentifiers = Arrays.asList("CHK1", "CHK2"); // 示例 checksums
         pagination = "{}";
-        productId = "someProductId";
-        sParameterType = "someSParamType";
+        productId = "GOLD";
+        sParameterType = "SENSITIVE";
     }
 
     @Test
     void retrieveTransferList_Success() {
-        // Arrange: 设置 Mock 行为
-        // 1. Mock buildRequestHeaders 返回
-        Map<String, String> rebuiltHeaders = new HashMap<>();
-        rebuiltHeaders.put("X-HSBC-CUSTOMER-ID", "testCIN");
-        rebuiltHeaders.put("Content-Type", "application/json");
-        // 注意: 实际上 buildRequestHeaders 会处理很多 header，这里简化。确保 CIN 被设置。
-        // 你可能需要更复杂的 Mock 来完全模拟 buildRequestHeaders 的行为，
-        // 或者直接 Mock AbstractRestService 的 buildRequestHeaders 方法。
-        // 但更常见的是 Mock retrieveCustomerAccounts 和其他被调用的 restClientService 方法。
-        // 如果 buildRequestHeaders 本身不依赖外部服务，可以不 Mock。
+        System.out.println("Running retrieveTransferList_Success test...");
+        // --- Arrange: 设置 Mock 行为 ---
 
-        // 2. Mock retrieveCustomerAccounts 方法返回一个有效的 CustomerAccounts
-        //    需要 Mock AbstractRestService 的 retrieveCustomerAccounts 方法
-        //    或者 Mock restClientService.get 调用，因为 retrieveCustomerAccounts 内部调用了它。
+        // 1. Mock retrieveCustomerAccounts() 的返回值
+        //    这需要 Mock restClientService.get() 被 retrieveCustomerAccounts() 调用时的行为。
+        //    retrieveCustomerAccounts() 内部构建的 URL 格式是: accountsMapUrl + "/accounts-map?consumerId=DAC"
+        //    假设 accountsMapUrl 是 "http://accounts-map-service" (这个值通常来自 @Value 注解，在测试中可能需要通过其他方式提供或 Mock UriComponentsBuilder)
+        //    为了精确匹配，我们可以使用 anyString() 来匹配 URL，但指定返回的类型是 CustomerAccounts.class
+        //    或者，更推荐的方式是使用 ArgumentCaptor 来捕获 URL 并验证它是否符合预期。
 
-        // 方案 A: Mock restClientService.get (推荐，因为它直接模拟了 HTTP 调用)
-        CustomerAccounts mockCustomerAccounts = new CustomerAccounts(); // 创建实例
-        InvestmentAccount acc1 = new InvestmentAccount();
-        acc1.setChecksum("checksum1");
-        InvestmentAccountId id1 = new InvestmentAccountId();
-        id1.setCountryAccountCode("HK");
-        id1.setGroupMemberAccountCode("HSBC");
-        id1.setAccountNumber("1234567890");
-        id1.setAccountProductTypeCode("GOLD");
-        id1.setAccountTypeCode("INVEST");
-        id1.setAccountCurrencyCode("HKD");
-        acc1.setInvestmentAccountId(id1);
-
-        InvestmentAccount acc2 = new InvestmentAccount();
-        acc2.setChecksum("checksum2");
-        InvestmentAccountId id2 = new InvestmentAccountId();
-        id2.setCountryAccountCode("HK");
-        id2.setGroupMemberAccountCode("HSBC");
-        id2.setAccountNumber("0987654321");
-        id2.setAccountProductTypeCode("SILVER");
-        id2.setAccountTypeCode("INVEST");
-        id2.setAccountCurrencyCode("USD");
-        acc2.setInvestmentAccountId(id2);
-
-        List<InvestmentAccount> accountList = Arrays.asList(acc1, acc2);
-        mockCustomerAccounts.setInvestmentAccountList(accountList); // 设置非空列表
-
-        // Mock restClientService.get 调用，匹配 accountsMapUrl 相关的 URL 模式
-        // 注意: retrieveCustomerAccounts 内部使用 UriComponentsBuilder 构建 URL
-        // 你需要确保 Mock 匹配的是正确的 URL 或者 accountsMapUrl 的值
-        // String expectedUrl = accountsMapUrl + "/accounts-map?consumerId=DAC";
-        // 更好的方式是使用 ArgumentCaptor 捕获 URL，或者 Mock UriComponentsBuilder
-        // 但最简单的方式是 Mock 整个 retrieveCustomerAccounts 方法的行为，或者 Mock get 方法
-        // 如果 retrieveCustomerAccounts 是 public 并且在 AbstractRestService 中，Mock get 是可行的。
-        // 如果 retrieveCustomerAccounts 是 protected/private，Mock get 是主要方式。
-        // 假设 accountsMapUrl 是 "http://accounts-map-service"
-        String accountsMapUrl = "http://accounts-map-service"; // 从配置或注入点获取，或使用 ArgumentCaptor
-        String builtUrl = UriComponentsBuilder.fromUriString(accountsMapUrl)
-                .path("accounts-map")
-                .queryParam("consumerId", "DAC")
-                .build()
-                .toUriString();
-        // 由于 URL 是动态构建的，直接 Mock get 可能需要 anyString() 或者更复杂的匹配器
-        // 最佳实践是 Mock retrieveCustomerAccounts 方法本身，但这需要将 AbstractRestService 也 Mock 或使用 Spy
-        // 或者，如果 TradeTransferServiceImpl 调用 retrieveCustomerAccounts，可以 Mock 它。
-        // 由于 retrieveCustomerAccounts 是 public，我们可以 Mock 它。
-        // 但是 TradeTransferServiceImpl 继承了 AbstractRestService，不能直接 Mock 继承的方法。
-        // 所以，回到 Mock restClientService.get 是最直接的。
-
-        // Mock the specific call inside retrieveCustomerAccounts
-        when(restClientService.get(anyString(), anyMap(), eq(CustomerAccounts.class), anyInt(), anyBoolean()))
-            .thenReturn(mockCustomerAccounts); // 对所有匹配的 get 调用返回 mockCustomerAccounts
-            // 如果有多个 get 调用，可能需要更精确的匹配器，例如:
-            // when(restClientService.get(contains("accounts-map"), anyMap(), eq(CustomerAccounts.class), anyInt(), anyBoolean()))
-            //     .thenReturn(mockCustomerAccounts);
-
-        // 3. Mock retrieveCustomerNamesWithCinNumber (假设它内部也调用 restClientService.get)
-        //    为简化，这里 Mock 一个返回值
-        // PartyNameResponse mockPartyNameResponse = new PartyNameResponse(); // ...
-        // when(restClientService.get(anyString(), anyMap(), eq(PartyNameResponse.class), anyInt(), anyBoolean()))
-        //     .thenReturn(mockPartyNameResponse); // 可能需要区分不同的 URL 或类
-
-        // 4. Mock retrieveCustomerPhoneNumberWithCinNumber (假设它内部也调用 restClientService.get)
-        //    为简化，这里 Mock 一个返回值
-        // PartyContactResponse mockPartyContactResponse = new PartyContactResponse(); // ...
-        // when(restClientService.get(anyString(), anyMap(), eq(PartyContactResponse.class), anyInt(), anyBoolean()))
-        //     .thenReturn(mockPartyContactResponse); // 可能需要区分不同的 URL 或类
-
-        // 5. Mock restClientService.get for the main retrieveTransferList call
-        RetrieveTransferListResponse mockResponse = new RetrieveTransferListResponse(); // 创建实例
-        // 设置 mockResponse 的 data 和其他属性...
-        when(restClientService.get(anyString(), anyMap(), eq(RetrieveTransferListResponse.class), anyInt(), anyBoolean()))
-            .thenReturn(mockResponse); // Mock 主要的 HTTP 调用
-
-
-        // Act: 调用被测试的方法
-        RetrieveTransferListResponse result = tradeTransferService.retrieveTransferList(
-            requestHeaders, transferStatusCode, checksumIdentifiers, pagination, productId, sParameterType
-        );
-
-        // Assert: 验证结果
-        assertNotNull(result, "Result should not be null");
-        // Add more specific assertions based on expected behavior and result content
-        // 例如，验证 restClientService.get 被调用了预期的次数和参数
-        verify(restClientService, times(2)).get(anyString(), anyMap(), any(), anyInt(), anyBoolean()); // 假设只调用了2次
-        // verify(restClientService, times(1)).get(eq(builtUrl), anyMap(), eq(CustomerAccounts.class), anyInt(), anyBoolean()); // 更精确的验证
-    }
-
-    // 如果需要测试 retrieveTransferList 方法中 accountIdMap 为空的情况，可以这样写：
-    @Test
-    void retrieveTransferList_EmptyAccountList() {
-        // Arrange
+        // 创建一个有效的 CustomerAccounts 对象，包含非空的 investmentAccountList
         CustomerAccounts mockCustomerAccounts = new CustomerAccounts();
-        mockCustomerAccounts.setInvestmentAccountList(null); // 设置为 null
+        List<InvestmentAccount> accountList = new ArrayList<>();
 
-        // Mock the specific call inside retrieveCustomerAccounts
+        // 添加至少一个 InvestmentAccount
+        InvestmentAccount account1 = new InvestmentAccount();
+        AccountId accountId1 = new AccountId();
+        accountId1.setAccountNumber("ACC123456789");
+        accountId1.setCountryAccountCode("HK");
+        accountId1.setGroupMemberAccountCode("HSBC");
+        accountId1.setAccountProductTypeCode("GOLD");
+        accountId1.setAccountTypeCode("INVEST");
+        accountId1.setAccountCurrencyCode("HKD");
+        account1.setInvestmentAccountId(accountId1);
+        account1.setChecksum("CHK1");
+        accountList.add(account1);
+
+        InvestmentAccount account2 = new InvestmentAccount();
+        AccountId accountId2 = new AccountId();
+        accountId2.setAccountNumber("ACC987654321");
+        accountId2.setCountryAccountCode("HK");
+        accountId2.setGroupMemberAccountCode("HSBC");
+        accountId2.setAccountProductTypeCode("SILVER");
+        accountId2.setAccountTypeCode("INVEST");
+        accountId2.setAccountCurrencyCode("USD");
+        account2.setInvestmentAccountId(accountId2);
+        account2.setChecksum("CHK2");
+        accountList.add(account2);
+
+        mockCustomerAccounts.setInvestmentAccountList(accountList); // 关键：设置非空列表
+
+        // Mock restClientService.get 调用，返回这个有效的 CustomerAccounts
+        // 使用 eq(CustomerAccounts.class) 来精确匹配调用类型
+        // 使用 anyString(), anyMap(), anyInt(), anyBoolean() 来匹配其他参数，因为我们主要关心返回值
+        // 为了更精确，可以使用 ArgumentCaptor 捕获 URL 并验证它是否包含 "accounts-map"
         when(restClientService.get(anyString(), anyMap(), eq(CustomerAccounts.class), anyInt(), anyBoolean()))
             .thenReturn(mockCustomerAccounts);
 
-        // Mock the main call response
-        RetrieveTransferListResponse mockResponse = new RetrieveTransferListResponse();
-        when(restClientService.get(anyString(), anyMap(), eq(RetrieveTransferListResponse.class), anyInt(), anyBoolean()))
-            .thenReturn(mockResponse);
+        // 2. Mock retrieveCustomerNamesWithCinNumber() 的返回值 (如果需要)
+        //    这个方法内部也调用 restClientService.get，可能需要区分
+        PartyNameResponse mockPartyNameResponse = new PartyNameResponse(); // 创建实例
+        // ... 设置 mockPartyNameResponse 的内容 ...
+        when(restClientService.get(anyString(), anyMap(), eq(PartyNameResponse.class), anyInt(), anyBoolean()))
+            .thenReturn(mockPartyNameResponse);
 
-        // Act
+        // 3. Mock retrieveCustomerPhoneNumberWithCinNumber() 的返回值 (如果需要)
+        //    这个方法内部也调用 restClientService.get，可能需要区分
+        PartyContactResponse mockPartyContactResponse = new PartyContactResponse(); // 创建实例
+        // ... 设置 mockPartyContactResponse 的内容 ...
+        when(restClientService.get(anyString(), anyMap(), eq(PartyContactResponse.class), anyInt(), anyBoolean()))
+            .thenReturn(mockPartyContactResponse);
+
+        // 4. Mock 主要的 retrieveTransferList API 调用的返回值
+        RetrieveTransferListResponse mockMainResponse = new RetrieveTransferListResponse();
+        RetrieveTransferListResponseData mockMainResponseData = new RetrieveTransferListResponseData();
+        // ... 设置 mockMainResponseData 的内容 ...
+        mockMainResponse.setData(mockMainResponseData);
+        // Mock the call for RetrieveTransferListResponse.class
+        // 这个调用应该发生在 retrieveTransferList 方法的最后
+        when(restClientService.get(anyString(), anyMap(), eq(RetrieveTransferListResponse.class), anyInt(), anyBoolean()))
+            .thenReturn(mockMainResponse);
+
+        // --- Act: 执行被测方法 ---
         RetrieveTransferListResponse result = tradeTransferService.retrieveTransferList(
             requestHeaders, transferStatusCode, checksumIdentifiers, pagination, productId, sParameterType
         );
 
-        // Assert
-        assertNotNull(result, "Result should not be null even with empty account list");
-        // Verify the behavior when accountIdMap is empty (e.g., certain query params might not be added)
-        // This depends on the specific implementation and what you want to assert
+        // --- Assert: 验证结果 ---
+        assertNotNull(result, "The response from retrieveTransferList should not be null.");
+        // 验证 retrieveTransferList 内部调用了 restClientService.get 来获取 CustomerAccounts
+        // 验证至少调用了一次获取 CustomerAccounts 的 get 方法
+        verify(restClientService, times(1)).get(anyString(), anyMap(), eq(CustomerAccounts.class), anyInt(), anyBoolean());
+        // 验证调用了一次获取 PartyName 的 get 方法
+        verify(restClientService, times(1)).get(anyString(), anyMap(), eq(PartyNameResponse.class), anyInt(), anyBoolean());
+        // 验证调用了一次获取 PartyContact 的 get 方法
+        verify(restClientService, times(1)).get(anyString(), anyMap(), eq(PartyContactResponse.class), anyInt(), anyBoolean());
+        // 验证调用了一次获取 TransferList 的 get 方法
+        verify(restClientService, times(1)).get(anyString(), anyMap(), eq(RetrieveTransferListResponse.class), anyInt(), anyBoolean());
+
+        // 如果 retrieveTransferList 方法内部逻辑正确，当 accountIdMap 不为空时，
+        // 应该会向 URI 添加 CHECKSUM_IDENTIFIERS 参数。
+        // 虽然难以直接在单元测试中验证 URI 的构建，但可以通过验证 `restClientService.get` 被调用的参数来间接推断。
+        // 重要的是，`extractAccountIdMap` 不会再返回空，因为 `retrieveCustomerAccounts` 返回了一个包含账户列表的对象。
+    }
+
+    @Test
+    void retrieveTransferList_EmptyAccountList() {
+        System.out.println("Running retrieveTransferList_EmptyAccountList test...");
+        // --- Arrange: 设置 Mock 行为，返回空列表 ---
+        CustomerAccounts mockCustomerAccountsEmptyList = new CustomerAccounts();
+        mockCustomerAccountsEmptyList.setInvestmentAccountList(new ArrayList<>()); // 空列表
+
+        // Mock restClientService.get 返回空列表的 CustomerAccounts
+        when(restClientService.get(anyString(), anyMap(), eq(CustomerAccounts.class), anyInt(), anyBoolean()))
+            .thenReturn(mockCustomerAccountsEmptyList);
+
+        // Mock other necessary calls (PartyName, PartyContact, Main Response)
+        PartyNameResponse mockPartyNameResponse = new PartyNameResponse();
+        PartyContactResponse mockPartyContactResponse = new PartyContactResponse();
+        RetrieveTransferListResponse mockMainResponse = new RetrieveTransferListResponse();
+        RetrieveTransferListResponseData mockMainResponseData = new RetrieveTransferListResponseData();
+        mockMainResponse.setData(mockMainResponseData);
+
+        when(restClientService.get(anyString(), anyMap(), eq(PartyNameResponse.class), anyInt(), anyBoolean()))
+            .thenReturn(mockPartyNameResponse);
+        when(restClientService.get(anyString(), anyMap(), eq(PartyContactResponse.class), anyInt(), anyBoolean()))
+            .thenReturn(mockPartyContactResponse);
+        when(restClientService.get(anyString(), anyMap(), eq(RetrieveTransferListResponse.class), anyInt(), anyBoolean()))
+            .thenReturn(mockMainResponse);
+
+        // --- Act: 执行被测方法 ---
+        RetrieveTransferListResponse result = tradeTransferService.retrieveTransferList(
+            requestHeaders, transferStatusCode, checksumIdentifiers, pagination, productId, sParameterType
+        );
+
+        // --- Assert: 验证结果 ---
+        assertNotNull(result, "The response should not be null even with an empty account list.");
+        // 验证调用次数
+        verify(restClientService, times(1)).get(anyString(), anyMap(), eq(CustomerAccounts.class), anyInt(), anyBoolean());
+        verify(restClientService, times(1)).get(anyString(), anyMap(), eq(PartyNameResponse.class), anyInt(), anyBoolean());
+        verify(restClientService, times(1)).get(anyString(), anyMap(), eq(PartyContactResponse.class), anyInt(), anyBoolean());
+        verify(restClientService, times(1)).get(anyString(), anyMap(), eq(RetrieveTransferListResponse.class), anyInt(), anyBoolean());
+        // 在这种情况下，accountIdMap 会是空的，因此 CHECKSUM_IDENTIFIERS 参数不会被添加到 URI 中。
+    }
+
+    @Test
+    void retrieveTransferList_NullAccountList() {
+        System.out.println("Running retrieveTransferList_NullAccountList test...");
+        // --- Arrange: 设置 Mock 行为，返回 null 列表 ---
+        CustomerAccounts mockCustomerAccountsNullList = new CustomerAccounts();
+        mockCustomerAccountsNullList.setInvestmentAccountList(null); // null 列表
+
+        // Mock restClientService.get 返回 null 列表的 CustomerAccounts
+        when(restClientService.get(anyString(), anyMap(), eq(CustomerAccounts.class), anyInt(), anyBoolean()))
+            .thenReturn(mockCustomerAccountsNullList);
+
+        // Mock other necessary calls (PartyName, PartyContact, Main Response)
+        PartyNameResponse mockPartyNameResponse = new PartyNameResponse();
+        PartyContactResponse mockPartyContactResponse = new PartyContactResponse();
+        RetrieveTransferListResponse mockMainResponse = new RetrieveTransferListResponse();
+        RetrieveTransferListResponseData mockMainResponseData = new RetrieveTransferListResponseData();
+        mockMainResponse.setData(mockMainResponseData);
+
+        when(restClientService.get(anyString(), anyMap(), eq(PartyNameResponse.class), anyInt(), anyBoolean()))
+            .thenReturn(mockPartyNameResponse);
+        when(restClientService.get(anyString(), anyMap(), eq(PartyContactResponse.class), anyInt(), anyBoolean()))
+            .thenReturn(mockPartyContactResponse);
+        when(restClientService.get(anyString(), anyMap(), eq(RetrieveTransferListResponse.class), anyInt(), anyBoolean()))
+            .thenReturn(mockMainResponse);
+
+        // --- Act: 执行被测方法 ---
+        RetrieveTransferListResponse result = tradeTransferService.retrieveTransferList(
+            requestHeaders, transferStatusCode, checksumIdentifiers, pagination, productId, sParameterType
+        );
+
+        // --- Assert: 验证结果 ---
+        assertNotNull(result, "The response should not be null even with a null account list.");
+        // 验证调用次数
+        verify(restClientService, times(1)).get(anyString(), anyMap(), eq(CustomerAccounts.class), anyInt(), anyBoolean());
+        verify(restClientService, times(1)).get(anyString(), anyMap(), eq(PartyNameResponse.class), anyInt(), anyBoolean());
+        verify(restClientService, times(1)).get(anyString(), anyMap(), eq(PartyContactResponse.class), anyInt(), anyBoolean());
+        verify(restClientService, times(1)).get(anyString(), anyMap(), eq(RetrieveTransferListResponse.class), anyInt(), anyBoolean());
+        // 在这种情况下，accountIdMap 也会是空的 (Collections.emptyMap())。
     }
 }
