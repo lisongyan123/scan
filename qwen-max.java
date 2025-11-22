@@ -47,13 +47,13 @@ void testRetrieveTransferDetail_Success_WithCustomerName() {
     mockContact.setMobileNumber1("123456789");
     mockPartyContactResponse.setContact(mockContact);
 
-    // ✅ 关键修改：构造与实际调用完全一致的 URI（transferReferenceNumber 已替换）
+    // ✅ 【核心修复】构造与实际调用完全一致的 URI（transferReferenceNumber 已替换）
     String expectedTransferDetailUri = MOCK_TRADE_ONLINE_URL + "/transfers/" + transferReferenceNumber +
             "?customerInternalNumber=" + customerInternalNumber + "&sParameterType=SENS";
 
-    // 1. Mock retrieveTransferDetail call —— 使用具体 URI
+    // 1. Mock retrieveTransferDetail call —— 使用已解析的具体 URI
     when(mockRestClientService.get(
-            eq(expectedTransferDetailUri), // ✅ 修改点：使用已解析的 URI
+            eq(expectedTransferDetailUri), // ✅ 使用 actual URI，不再是模板
             anyMap(),
             eq(RetrieveTransferDetailResponse.class),
             anyInt(),
@@ -115,7 +115,7 @@ void testRetrieveTransferDetail_Success_WithCustomerName() {
     assertNotNull(result.getResponseDetails());
     assertEquals(0, result.getResponseDetails().getResponseCodeNumber());
 
-    // Verify interactions
+    // Verify interactions —— 同样使用 actual URI
     verify(mockRestClientService, times(1)).get(
             eq(expectedTransferDetailUri), // ✅ 验证使用的是具体 URI
             anyMap(),
