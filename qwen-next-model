@@ -1,180 +1,146 @@
 @Test
-public void retrieveTransferList_Success() {
-    // --- 1. 准备模拟的请求头 ---
-    Map<String, String> requestHeader = new HashMap<>();
-    requestHeader.put("X-HSBC-Customer-ID", "C123456");
+void retrieveTransferDetail_Success_WithCustomerName() {
+    // Arrange
+    String transferReferenceNumber = "ref123";
+    String customerInternalNumber = "testCIN123"; // Extracted from baseRequestHeaders
 
-    // --- 2. 模拟 retrieveCustomerAccounts() 返回有效数据（关键1）---
-    CustomerAccounts customerAccounts = new CustomerAccounts();
-    List<InvestmentAccount> investmentAccountList = new ArrayList<>();
+    // 1. Mock: retrieveTransferDetail Response
+    RetrieveTransferDetailResponse mockResponse = new RetrieveTransferDetailResponse();
+    RetrieveTransferDetailResponseData responseData = new RetrieveTransferDetailResponseData();
+    responseData.setInvestmentAccount(new AccountId()); // Ensure investmentAccount is not null for later processing
+    mockResponse.setData(responseData);
 
-    InvestmentAccount account = new InvestmentAccount();
-    com.hsbc.trade.transfer.domain.account.AccountId accountId = new com.hsbc.trade.transfer.domain.account.AccountId();
-    accountId.setCountryAccountCode("HK");
-    accountId.setGroupMemberAccountCode("G001");
-    accountId.setAccountNumber("123456789");
-    accountId.setAccountProductTypeCode("INV");
-    accountId.setAccountTypeCode("GOLD");
-    accountId.setAccountCurrencyCode("HKD");
-    account.setInvestmentAccountId(accountId);
-    account.setChecksum("CHK123456"); // 必须有这个字段！
-    investmentAccountList.add(account);
+    // 2. Mock: CustomerAccounts for extractAccountIdMap (must be valid to pass the check)
+    CustomerAccounts mockCustomerAccounts = new CustomerAccounts();
+    List<InvestmentAccount> accList = new ArrayList<>();
+    InvestmentAccount acc1 = new InvestmentAccount();
+    acc1.setChecksum("chk123");
+    com.hsbc.trade.transfer.domain.account.AccountId accountId = com.hsbc.trade.transfer.domain.account.AccountId.builder()
+            .countryAccountCode("CN")
+            .groupMemberAccountCode("G001")
+            .accountNumber("123456789012345678901234567890")
+            .accountProductTypeCode("01")
+            .accountTypeCode("INV")
+            .accountCurrencyCode("CNY")
+            .build();
+    acc1.setInvestmentAccountId(accountId);
+    accList.add(acc1);
+    mockCustomerAccounts.setInvestmentAccountList(accList); // Now the list is not empty and contains valid objects
 
-    customerAccounts.setInvestmentAccountList(investmentAccountList);
+    // 3. Mock: PartyNameResponse for addCustomerNameToUri (getName() != null path)
+    PartyNameResponse mockPartyNameResponse = new PartyNameResponse();
+    PartyName mockName = new PartyName(); // Assuming PartyName class is available
+    mockName.setLastName("Doe");
+    mockName.setGivenName("John");
+    mockName.setCustomerChristianName("Smith");
+    mockPartyNameResponse.setName(mockName); // getName() will return this non-null object
 
-    when(restClientService.get(
-            anyString(), // accountsMapUrl
-            anyMap(),    // requestHeaders
-            eq(CustomerAccounts.class),
-            anyInt(),
-            anyBoolean()
-    )).thenReturn(customerAccounts);
+    // 4. Mock: PartyContactResponse for addCustomerContactToUri (getContact() != null path)
+    PartyContactResponse mockPartyContactResponse = new PartyContactResponse();
+    PartyContact mockContact = new PartyContact(); // Assuming PartyContact class is available
+    mockContact.setMobileNumber1("12345678");
+    mockPartyContactResponse.setContact(mockContact); // getContact() will return this non-null object
 
-    // --- 3. 模拟其他依赖（如 CEP 服务）---
-    PartyNameResponse partyNameResponse = new PartyNameResponse();
-    PartyName name = new PartyName();
-    name.setLastName("CHAN");
-    name.setGivenName("TOM");
-    name.setCustomerChristianName("KING");
-    partyNameResponse.setName(name);
-    when(restClientService.get(anyString(), anyMap(), eq(PartyNameResponse.class), anyInt(), anyBoolean()))
-            .thenReturn(partyNameResponse);
-
-    PartyContactResponse partyContactResponse = new PartyContactResponse();
-    PartyContact contact = new PartyContact();
-    contact.setMobileNumber1("12345678");
-    partyContactResponse.setContact(contact);
-    when(restClientService.get(anyString(), anyMap(), eq(PartyContactResponse.class), anyInt(), anyBoolean()))
-            .thenReturn(partyContactResponse);
-
-    // --- 4. ✅ 关键修复：Mock CustomerLimitConfig，设置其返回值（解决核心问题）---
-    // 创建一个 Mock 的 CustomerLimitConfig
-    CustomerLimitConfig mockCustomerLimitConfig = mock(CustomerLimitConfig.class);
-
-    // 设置它返回我们期望的值（必须大于 transferAmount，避免抛出 TransferLimitExceededException）
-    when(mockCustomerLimitConfig.getDailyAmount()).thenReturn(new BigDecimal("20000"));  // > 10000
-    when(mockCustomerLimitConfig.getMonthlyAmount()).thenReturn(new BigDecimal("100000")); // > 10000
-    when(mockCustomerLimitConfig.getYearlyAmount()).thenReturn(new BigDecimal("500000")); // > 10000
-    when(mockCustomerLimitConfig.getMonthlyCount()).thenReturn(10); // 避免月次数限制
-
-    // ✅ 将 Mock 的 CustomerLimitConfig 注入到 TradeTransferServiceImpl 中
-    // 注意：TradeTransferServiceImpl 的 tradeLimitService 是一个真实的 TradeLimitServiceImpl 实例！
-    // 我们需要通过反射设置它的 customerLimitConfig 字段
-    try {
-        Field customerLimitConfigField = TradeLimitServiceImpl.class.getDeclaredField("customerLimitConfig");
-        customerLimitConfigField.setAccessible(true);
-        customerLimitConfigField.set(tradeLimitService, mockCustomerLimitConfig); // ← 这是关键！
-    } catch (Exception e) {
-        throw new RuntimeException("Failed to inject mock CustomerLimitConfig into tradeLimitService", e);
-    }
-
-    // --- 5. 模拟 retrieveTransferLimit() 返回一个包含数据的响应（此时数据不会被覆盖）---
-    // 因为我们已经 Mock 了 config，所以 TradeLimitServiceImpl 会用我们设置的值构建响应
-    // 我们不需要手动构造 data，它会自动用 mock config 的值
-    RetrieveTransferLimitResponse limitResponse = new RetrieveTransferLimitResponse();
-    RetrieveTransferLimitResponseData data = new RetrieveTransferLimitResponseData();
-    // 我们可以不手动设置这些值，因为 TradeLimitServiceImpl 会用 customerLimitConfig 设置它们
-    // 但为了确保测试清晰，我们也可以设置一个“预期值”（可选）
-    data.setMaxDailyLimitedAmount(new BigDecimal("20000"));
-    data.setMaxMonthlyLimitedAmount(new BigDecimal("100000"));
-    data.setMaxYearlyLimitedAmount(new BigDecimal("500000"));
-    data.setAvailableTodayAmount(new BigDecimal("15000")); // > totalTranAmount
-    data.setAvailableMonthToDateAmount(new BigDecimal("90000"));
-    data.setAvailableYearToDateAmount(new BigDecimal("450000"));
-    limitResponse.setData(data);
-
-    // ✅ 现在，当 tradeLimitService.retrieveLimitations(...) 被调用时：
-    //   1. 它会使用我们注入的 mockCustomerLimitConfig 来初始化 data
-    //   2. 它不会去调用外部服务（因为我们没有 mock restClientService.get(...) for LimitEnquiryResponse）
-    //      → 但我们不关心，因为我们只测试“限额足够”的路径
-    //   3. 所以我们直接返回这个预设的 limitResponse
-    when(tradeLimitService.retrieveLimitations(anyMap())).thenReturn(limitResponse);
-
-    // --- 6. 模拟 CEP 的 E2E Trust Token 头部（如果需要）---
-    when(e2ETrustTokenUtil.getE2ETrustToken()).thenReturn("mock-e2e-token");
-
-    // --- 7. 模拟 retrieveGoldPrice() ---
-    GoldPriceResponse goldPriceResponse = new GoldPriceResponse();
-    GoldPriceResponseData goldPriceData = new GoldPriceResponseData();
-    goldPriceData.setGoldPriceAmount(BigDecimal.valueOf(100.50));
-    goldPriceData.setPublishTime("2025-11-22T10:00:00Z");
-    goldPriceResponse.setData(goldPriceData);
-    when(restClientService.get(anyString(), anyMap(), eq(GoldPriceResponse.class), anyInt(), anyBoolean()))
-            .thenReturn(goldPriceResponse);
-
-    // --- 8. 模拟最终的 restClientService.get() 调用，返回有效的 RetrieveTransferListResponse ---
-    RetrieveTransferListResponse mockResponse = constructValidRetrieveTransferListResponse();
-    when(restClientService.get(
-            anyString(), // 任意URI
-            anyMap(),    // 任意请求头
-            eq(RetrieveTransferListResponse.class),
-            anyInt(),    // timeout
+    // --- CRITICAL: Mock the specific restClientService.get calls with exact URLs and headers ---
+    // 1. Call for retrieveTransferDetail itself
+    when(mockRestClientService.get(
+            eq(MOCK_TRADE_ONLINE_URL + "/transfers/{transferReferenceNumber}?customerInternalNumber=" + customerInternalNumber + "&sParameterType=SENS"),
+            anyMap(), // request headers rebuilt
+            eq(RetrieveTransferDetailResponse.class),
+            anyInt(), // timeout
             anyBoolean() // printMessageLog
     )).thenReturn(mockResponse);
 
-    // --- 9. 调用被测方法 ---
-    RetrieveTransferListResponse response = tradeTransferService.retrieveTransferList(
-            requestHeader,
-            "PENDING",
-            Collections.emptyList(),
-            "{}",
-            "GOLD",
-            "MOBILE"
-    );
+    // 2. Call for retrieveCustomerAccounts (inside retrieveTransferDetail)
+    when(mockRestClientService.get(
+            eq(MOCK_ACCOUNTS_MAP_URL + "accounts-map?consumerId=DAC"), // Built URI string
+            anyMap(), // request headers rebuilt
+            eq(CustomerAccounts.class),
+            anyInt(), // timeout
+            anyBoolean() // printMessageLog
+    )).thenReturn(mockCustomerAccounts);
 
-    // --- 10. 断言 ---
-    assertNotNull(response);
-    assertNotNull(response.getData());
-    assertNotNull(response.getData().getTransferLists());
-    assertEquals(1, response.getData().getTransferLists().size());
+    // 3. Call for retrieveCustomerNamesWithCinNumber (inside addCustomerNameToUri)
+    // 这里是关键：模拟 updateHeaderforCEP 和 buildSensitiveHeaders 后的最终调用
+    // 1) buildSensitiveHeaders 会创建一个包含 "SensitiveHeadersKey" 和 "testCIN123" 的 JSON 字符串
+    // 2) 然后 Base64 编码后，设置到 X-HSBC-Sensitive-Data 头中
+    // 3) 最终的 URL 是 MOCK_CEP_PARTY_NAME_URL 中的 "CIN-SensitiveHeadersKey" 被替换为 "testCIN123"
 
-    // 验证 checksumIdentifiers 被正确添加到请求中（来自 accountIdMap）
-    verify(restClientService).get(
-            argThat(uri -> uri.contains("checksumIdentifiers=CHK123456")),
+    // 构建 buildSensitiveHeaders 生成的敏感数据
+    String sensitiveDataJson = "[{\"key\":\"SensitiveHeadersKey\",\"value\":\"" + customerInternalNumber + "\"}]";
+    String base64SensitiveData = Base64.getEncoder().encodeToString(sensitiveDataJson.getBytes(StandardCharsets.UTF_8));
+
+    // 构建 updateHeaderforCEP 后的 header
+    Map<String, String> expectedHeadersForCEP = new HashMap<>();
+    expectedHeadersForCEP.putAll(baseRequestHeaders);
+    expectedHeadersForCEP.remove(HTTPRequestHeaderConstants.X_HSBC_SAML);
+    expectedHeadersForCEP.remove(HTTPRequestHeaderConstants.X_HSBC_SAML3);
+    expectedHeadersForCEP.put(HTTPRequestHeaderConstants.X_HSBC_E2E_TRUST_TOKEN, "e2e-token"); // 从 setUp() 中的 mock
+    expectedHeadersForCEP.put(HTTPRequestHeaderConstants.X_HSBC_GBGF, ""); // 从 @Value 注入的默认值
+    expectedHeadersForCEP.put(HTTPRequestHeaderConstants.X_HSBC_SOURCE_SYSTEM_ID, ""); // 从 @Value 注入的默认值
+    expectedHeadersForCEP.put(HTTPRequestHeaderConstants.X_HSBC_SENSITIVE_DATA, base64SensitiveData); // 关键！模拟 buildSensitiveHeaders 的输出
+
+    // 构建最终的 URL
+    String expectedNameUrl = MOCK_CEP_PARTY_NAME_URL.replace("CIN-SensitiveHeadersKey", customerInternalNumber);
+
+    // 模拟 restClientService.get 对 CEP 名称服务的调用
+    when(mockRestClientService.get(
+            eq(expectedNameUrl), // URL 必须匹配
+            argThat(headers -> headers.equals(expectedHeadersForCEP)), // Header 必须完全匹配
+            eq(PartyNameResponse.class),
+            anyInt(), // timeout
+            anyBoolean() // printMessageLog
+    )).thenReturn(mockPartyNameResponse);
+
+    // 4. Call for retrieveCustomerPhoneNumberWithCinNumber (inside addCustomerContactToUri)
+    // 与上面同理，但注意：addCustomerContactToUri 也调用了 updateHeaderforCEP，所以 header 与上面完全相同！
+    String expectedContactUrl = MOCK_CEP_PARTY_CONTACT_URL.replace("CIN-SensitiveHeadersKey", customerInternalNumber);
+
+    when(mockRestClientService.get(
+            eq(expectedContactUrl),
+            argThat(headers -> headers.equals(expectedHeadersForCEP)), // 与上面完全相同的 header
+            eq(PartyContactResponse.class),
+            anyInt(), // timeout
+            anyBoolean() // printMessageLog
+    )).thenReturn(mockPartyContactResponse);
+
+    // Mock E2E token generation for updateHeaderforCEP calls
+    when(mockE2ETrustTokenUtil.getE2ETrustToken()).thenReturn("e2e-token");
+
+    // Act
+    RetrieveTransferDetailResponse result = tradeTransferService.retrieveTransferDetail(baseRequestHeaders, transferReferenceNumber);
+
+    // Assert
+    assertNotNull(result);
+    // Verify the specific interactions happened
+    verify(mockRestClientService, times(1)).get(
+            eq(MOCK_TRADE_ONLINE_URL + "/transfers/{transferReferenceNumber}?customerInternalNumber=" + customerInternalNumber + "&sParameterType=SENS"),
             anyMap(),
-            eq(RetrieveTransferListResponse.class),
+            eq(RetrieveTransferDetailResponse.class),
             anyInt(),
             anyBoolean()
     );
-
-    // 验证所有依赖都被调用
-    verify(restClientService).get(anyString(), anyMap(), eq(CustomerAccounts.class), anyInt(), anyBoolean());
-    verify(restClientService).get(anyString(), anyMap(), eq(PartyNameResponse.class), anyInt(), anyBoolean());
-    verify(restClientService).get(anyString(), anyMap(), eq(PartyContactResponse.class), anyInt(), anyBoolean());
-    verify(tradeLimitService).retrieveLimitations(anyMap());
-    verify(restClientService).get(anyString(), anyMap(), eq(GoldPriceResponse.class), anyInt(), anyBoolean());
-    verify(restClientService).get(anyString(), anyMap(), eq(RetrieveTransferListResponse.class), anyInt(), anyBoolean());
-}
-
-// --- 辅助方法：构造一个完整的、有效的 RetrieveTransferListResponse ---
-private RetrieveTransferListResponse constructValidRetrieveTransferListResponse() {
-    RetrieveTransferListResponse response = new RetrieveTransferListResponse();
-    RetrieveTransferListResponseData data = new RetrieveTransferListResponseData();
-
-    List<TransferListItemInfo> transferList = new ArrayList<>();
-    TransferListItemInfo item = new TransferListItemInfo();
-
-    item.setTransferReferenceNumber("TRF123456789");
-    item.setTransferSideCode("SENDER");
-    item.setSenderCustomerFirstName("TOM");
-    item.setSenderCustomerMiddleName("KING");
-    item.setSenderCustomerLastName("CHAN");
-    item.setReceiverCustomerFirstName("JACK");
-    item.setReceiverCustomerMiddleName("JAMES");
-    item.setReceiverCustomerLastName("WONG");
-    item.setTransferQuantity(BigDecimal.valueOf(100));
-    item.setTransferAmount(BigDecimal.valueOf(10000));
-    item.setRequestPriceValue(BigDecimal.valueOf(100.50));
-    item.setRequestPriceCurrencyCode("HKD");
-    item.setTransferStatus("PENDING");
-    item.setTransferDate("2025-11-22");
-    item.setSenderInvestmentAccountChecksumIdentifier("CHK123456");
-    item.setReceiverInvestmentAccountChecksumIdentifier("CHK987654");
-
-    transferList.add(item);
-
-    data.setTransferLists(transferList);
-    response.setData(data);
-
-    return response;
+    verify(mockRestClientService, times(1)).get(
+            eq(MOCK_ACCOUNTS_MAP_URL + "accounts-map?consumerId=DAC"),
+            anyMap(),
+            eq(CustomerAccounts.class),
+            anyInt(),
+            anyBoolean()
+    );
+    verify(mockRestClientService, times(1)).get(
+            eq(expectedNameUrl),
+            argThat(headers -> headers.equals(expectedHeadersForCEP)),
+            eq(PartyNameResponse.class),
+            anyInt(),
+            anyBoolean()
+    );
+    verify(mockRestClientService, times(1)).get(
+            eq(expectedContactUrl),
+            argThat(headers -> headers.equals(expectedHeadersForCEP)),
+            eq(PartyContactResponse.class),
+            anyInt(),
+            anyBoolean()
+    );
+    // 验证 E2E token 被获取了两次（一次用于 name，一次用于 contact）
+    verify(mockE2ETrustTokenUtil, times(2)).getE2ETrustToken();
 }
