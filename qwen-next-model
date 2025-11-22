@@ -7,20 +7,29 @@ void testRetrieveTransferDetail_Success_WithCustomerName() {
     // 1. Mock: retrieveTransferDetail Response
     RetrieveTransferDetailResponse mockResponse = new RetrieveTransferDetailResponse();
     RetrieveTransferDetailResponseData responseData = new RetrieveTransferDetailResponseData();
-    // ✅ 必须设置一个非空的 AccountId，否则后续的 findAccountChecksumForAccountNumber 会找不到
+
+    // ✅ 关键修复1：设置一个非空的 AccountId
     AccountId accountId = new AccountId();
     accountId.setAccountNumber("987654321"); // 这个值必须和下面 mock 的 InvestmentAccount 一致
     responseData.setInvestmentAccount(accountId);
-    mockResponse.setData(responseData);
 
-    // 2. ✅ 关键：Mock CustomerAccounts for retrieveCustomerAccounts() - 这是之前缺失的！
+    // ✅ 关键修复2：设置 responseDetails！这是 ResponseInfoHandler.prepareResponse 所必需的
+    ResponseDetails responseDetails = new ResponseDetails();
+    responseDetails.setResponseCodeNumber(0); // ✅ 成功状态码，必须设置！
+    responseDetails.setReasonCodes(Collections.emptyList()); // ✅ 避免空指针
+    responseDetails.setWarnings(Collections.emptyList()); // ✅ 避免空指针
+    responseDetails.setErrorInfos(Collections.emptyList()); // ✅ 避免空指针
+    responseData.setResponseDetails(responseDetails); // ✅ 将 responseDetails 设置到 data 中
+
+    mockResponse.setData(responseData); // ✅ 设置 data
+
+    // 2. Mock: CustomerAccounts for extractAccountIdMap (must be valid to pass the check)
     CustomerAccounts mockCustomerAccounts = new CustomerAccounts();
     List<InvestmentAccount> accList = new ArrayList<>();
-
     InvestmentAccount acc1 = new InvestmentAccount();
     acc1.setChecksum("chk123");
 
-    // ✅ 创建一个完整的 com.hsbc.trade.transfer.domain.account.AccountId 对象
+    // ✅ 使用正确的包路径下的 AccountId
     com.hsbc.trade.transfer.domain.account.AccountId investmentAccountId = com.hsbc.trade.transfer.domain.account.AccountId.builder()
             .countryAccountCode("CN")
             .groupMemberAccountCode("G001")
@@ -35,19 +44,19 @@ void testRetrieveTransferDetail_Success_WithCustomerName() {
 
     mockCustomerAccounts.setInvestmentAccountList(accList); // ✅ 设置非空列表
 
-    // 3. Mock: PartyNameResponse for addCustomerNameToUri
+    // 3. Mock: PartyNameResponse for addCustomerNameToUri (getName() != null path)
     PartyNameResponse mockPartyNameResponse = new PartyNameResponse();
     PartyName mockName = new PartyName();
     mockName.setLastName("Doe");
     mockName.setGivenName("John");
     mockName.setCustomerChristianName("Smith");
-    mockPartyNameResponse.setName(mockName);
+    mockPartyNameResponse.setName(mockName); // getName() will return this non-null object
 
-    // 4. Mock: PartyContactResponse for addCustomerContactToUri
+    // 4. Mock: PartyContactResponse for addCustomerContactToUri (getContact() != null path)
     PartyContactResponse mockPartyContactResponse = new PartyContactResponse();
     PartyContact mockContact = new PartyContact();
     mockContact.setMobileNumber1("123456789");
-    mockPartyContactResponse.setContact(mockContact);
+    mockPartyContactResponse.setContact(mockContact); // getContact() will return this non-null object
 
     // --- CRITICAL: Mock the specific restClientService.get calls with exact URLs and headers ---
 
@@ -58,20 +67,18 @@ void testRetrieveTransferDetail_Success_WithCustomerName() {
             eq(RetrieveTransferDetailResponse.class),
             anyInt(),
             anyBoolean()
-    )).thenReturn(mockResponse);
+    )).thenReturn(mockResponse); // ✅ 现在 mockResponse 是一个结构完整、responseDetails 非空的对象！
 
-    // 2. ✅ 关键修复：Mock retrieveCustomerAccounts() 的调用
-    // 注意：URL 是 MOCK_ACCOUNTS_MAP_URL + "accounts-map?consumerId=DAC"
+    // 2. Call for retrieveCustomerAccounts (inside retrieveTransferDetail)
     when(mockRestClientService.get(
-            eq(MOCK_ACCOUNTS_MAP_URL + "accounts-map?consumerId=DAC"), // ✅ 完全匹配 URL
-            anyMap(), // request headers rebuilt
+            eq(MOCK_ACCOUNTS_MAP_URL + "accounts-map?consumerId=DAC"),
+            anyMap(),
             eq(CustomerAccounts.class),
             anyInt(),
             anyBoolean()
-    )).thenReturn(mockCustomerAccounts); // ✅ 返回我们构建的非空对象
+    )).thenReturn(mockCustomerAccounts);
 
     // 3. Call for retrieveCustomerNamesWithCinNumber (inside addCustomerNameToUri)
-    // 构建 buildSensitiveHeaders 和 updateHeaderforCEP 后的最终 header
     String sensitiveDataJson = "[{\"key\":\"SensitiveHeadersKey\",\"value\":\"" + customerInternalNumber + "\"}]";
     String base64SensitiveData = Base64.getEncoder().encodeToString(sensitiveDataJson.getBytes(StandardCharsets.UTF_8));
 
@@ -87,7 +94,7 @@ void testRetrieveTransferDetail_Success_WithCustomerName() {
     String expectedNameUrl = MOCK_CEP_PARTY_NAME_URL.replace("CIN-SensitiveHeadersKey", customerInternalNumber);
     when(mockRestClientService.get(
             eq(expectedNameUrl),
-            argThat(headers -> headers.equals(expectedHeadersForCEP)), // ✅ 精确匹配 header
+            argThat(headers -> headers.equals(expectedHeadersForCEP)),
             eq(PartyNameResponse.class),
             anyInt(),
             anyBoolean()
@@ -97,13 +104,13 @@ void testRetrieveTransferDetail_Success_WithCustomerName() {
     String expectedContactUrl = MOCK_CEP_PARTY_CONTACT_URL.replace("CIN-SensitiveHeadersKey", customerInternalNumber);
     when(mockRestClientService.get(
             eq(expectedContactUrl),
-            argThat(headers -> headers.equals(expectedHeadersForCEP)), // ✅ 精确匹配 header
+            argThat(headers -> headers.equals(expectedHeadersForCEP)),
             eq(PartyContactResponse.class),
             anyInt(),
             anyBoolean()
     )).thenReturn(mockPartyContactResponse);
 
-    // Mock E2E token generation
+    // Mock E2E token generation for updateHeaderforCEP calls
     when(mockE2ETrustTokenUtil.getE2ETrustToken()).thenReturn("mock-e2e-token");
 
     // Act
@@ -117,7 +124,11 @@ void testRetrieveTransferDetail_Success_WithCustomerName() {
 
     // ✅ 验证 checksum 被成功设置
     assertNotNull(result.getData().getAccountChecksumIdentifier());
-    assertEquals("chk123", result.getData().getAccountChecksumIdentifier()); // ✅ 这是来自 mockCustomerAccounts 的 checksum
+    assertEquals("chk123", result.getData().getAccountChecksumIdentifier());
+
+    // ✅ 验证 responseDetails 被正确设置
+    assertNotNull(result.getResponseDetails());
+    assertEquals(0, result.getResponseDetails().getResponseCodeNumber());
 
     // Verify the specific interactions happened
     verify(mockRestClientService, times(1)).get(
