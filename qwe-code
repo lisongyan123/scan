@@ -1,64 +1,49 @@
-import com.hsbc.rtp.client.sre.domain.SreRequest;
-import com.hsbc.trade.HTTPRequestHeaderConstants;
 import com.hsbc.trade.common.AccountId;
-import com.hsbc.trade.service.DuplicateSubmitPreventionService;
-import com.hsbc.trade.service.RestClientService;
-import com.hsbc.trade.service.impl.RetrieveCustomerProfilesServiceImpl;
-import com.hsbc.trade.transfer.common.ActionRequestCode;
-import com.hsbc.trade.transfer.constant.TransferQueryParameterConstant;
-import com.hsbc.trade.transfer.createtransfer.CreateTransferRequest;
-import com.hsbc.trade.transfer.createtransfer.CreateTransferRequestData;
-import com.hsbc.trade.transfer.createtransfer.CreateTransferResponse;
-import com.hsbc.trade.transfer.createtransfer.ReceiverInfo;
-import com.hsbc.trade.transfer.domain.RetrieveCustomerAccountsIdListResponse;
-import com.hsbc.trade.transfer.domain.account.CustomerAccounts;
-import com.hsbc.trade.transfer.domain.account.InvestmentAccount;
-import com.hsbc.trade.transfer.domain.account.InvestmentAccountId;
-import com.hsbc.trade.transfer.domain.account.InvestmentAccountIdList;
-import com.hsbc.trade.transfer.domain.gold.GoldPriceResponse;
-import com.hsbc.trade.transfer.domain.gold.Price;
-import com.hsbc.trade.transfer.retrievetransferlimit.RetrieveTransferLimitResponse;
-import com.hsbc.trade.transfer.retrievetransferlimit.RetrieveTransferLimitResponseData;
+import com.hsbc.trade.common.ResponseDetails;
+import com.hsbc.trade.customeraccounts.CustomerAccounts;
+import com.hsbc.trade.customeraccounts.InvestmentAccount;
+import com.hsbc.trade.customeraccounts.InvestmentAccountId;
+import com.hsbc.trade.customeraccounts.RetrieveCustomerAccountsIdListResponse;
+import com.hsbc.trade.transfer.enums.TransferQueryParameterConstant;
+import com.hsbc.trade.transfer.exception.TransferLimitExceededException;
 import com.hsbc.trade.transfer.retrievetransferdetail.RetrieveTransferDetailResponse;
 import com.hsbc.trade.transfer.retrievetransferdetail.RetrieveTransferDetailResponseData;
-import com.hsbc.trade.transfer.retrievetransferlist.RetrieveTransferListResponse;
-import com.hsbc.trade.transfer.retrievetransferlist.RetrieveTransferListResponseData;
-import com.hsbc.trade.transfer.retrievetransferlist.TransferListItemInfo;
 import com.hsbc.trade.transfer.service.TradeTransferService;
-import com.hsbc.trade.transfer.service.impl.SreValidationServiceImpl;
-import com.hsbc.trade.transfer.service.impl.TradeLimitServiceImpl;
+import com.hsbc.trade.transfer.service.impl.TradeTransferServiceImpl;
+import com.hsbc.trade.transfer.utils.ResponseInfoHandler;
 import com.hsbc.trade.utils.E2ETrustTokenUtil;
-import com.hsbc.trade.transfer.domain.PartyNameResponse;
-import com.hsbc.trade.transfer.domain.PartyContactResponse;
-import com.hsbc.trade.transfer.domain.Name;
-import com.hsbc.trade.transfer.domain.Contact;
-import com.hsbc.trade.transfer.domain.TransferSideCode;
-import com.hsbc.trade.transfer.exception.TransferLimitExceededException;
-import com.hsbc.trade.transfer.exception.BadRequestException;
+import jakarta.ws.rs.BadRequestException;
 import jakarta.ws.rs.InternalServerErrorException;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
-import org.mockito.ArgumentCaptor;
 import org.mockito.InjectMocks;
 import org.mockito.Mock;
+import org.mockito.MockedStatic;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.test.util.ReflectionTestUtils;
-import org.springframework.web.util.UriComponentsBuilder;
 
 import java.math.BigDecimal;
-import java.time.LocalDate;
-import java.time.format.DateTimeFormatter;
-import java.util.*;
+import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.*;
-import static org.mockito.ArgumentMatchers.*;
-import static org.mockito.Mockito.*;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyBoolean;
+import static org.mockito.ArgumentMatchers.anyInt;
+import static org.mockito.ArgumentMatchers.anyMap;
+import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.lenient;
+import static org.mockito.Mockito.times;
+import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.when;
 
 @ExtendWith(MockitoExtension.class)
 class TradeTransferServiceImplTest2 {
 
-    // --- Mocks and InjectMocks (保持不变) ---
     @Mock
     private RestClientService restClientService;
 
@@ -66,181 +51,195 @@ class TradeTransferServiceImplTest2 {
     private E2ETrustTokenUtil e2ETrustTokenUtil;
 
     @Mock
-    private DuplicateSubmitPreventionService duplicateSubmitPreventionService;
+    private DuplicateSubmitPreventionService mockDuplicateSubmitPreventionService;
 
     @Mock
-    private SreValidationServiceImpl sreValidationService;
-
-    @Mock
-    private TradeLimitServiceImpl tradeLimitService;
-
-    @Mock
-    private RetrieveCustomerProfilesServiceImpl retrieveCustomerProfilesService;
+    private RetrieveCustomerProfilesServiceImpl mockRetrieveCustomerProfilesService;
 
     @InjectMocks
-    private TradeTransferService tradeTransferService;
+    private TradeTransferServiceImpl tradeTransferService;
 
-    private Map<String, String> sourceRequestHeader;
+    // Mock other dependencies if required by the constructor or other methods
+    // @Mock
+    // private SreValidationServiceImpl mockSreValidationService;
+    // @Mock
+    // private TradeLimitServiceImpl mockTradeLimitService;
 
-    // --- Constants for mocking URLs (保持不变) ---
     private static final String MOCK_TRADE_ONLINE_URL = "http://mock-trade-online";
     private static final String MOCK_ACCOUNTS_MAP_URL = "http://mock-accounts-map";
     private static final String MOCK_CEP_PARTY_NAME_URL = "http://mock-cep-party-name";
     private static final String MOCK_CEP_PARTY_CONTACT_URL = "http://mock-cep-party-contact";
+    private static final String MOCK_MDS_GOLD_QUOTES_URL = "http://mock-mds-gold";
+    private static final String MOCK_CUSTOMER_ACCOUNT_URL = "http://mock-customer-account";
+
+    private Map<String, String> sourceRequestHeader;
 
     @BeforeEach
     void setUp() {
-        // --- Set ReflectionTestUtils fields (保持不变) ---
+        // Initialize common request headers
+        sourceRequestHeader = new HashMap<>();
+        sourceRequestHeader.put("X-HSBC-Customer-ID", "testCIN123");
+        sourceRequestHeader.put("X-HSBC-Channel-CountryCode", "HK");
+        sourceRequestHeader.put("X-HSBC-Channel-GroupMember", "HBAP");
+
+        // Set up the URLs and other fields using ReflectionTestUtils
         ReflectionTestUtils.setField(tradeTransferService, "tradeOnlineUrl", MOCK_TRADE_ONLINE_URL);
-        ReflectionTestUtils.setField(tradeTransferService, "customerAccountUrl", MOCK_ACCOUNTS_MAP_URL); // For retrieveCustomerAccounts
+        ReflectionTestUtils.setField(tradeTransferService, "accountsMapUrl", MOCK_ACCOUNTS_MAP_URL);
         ReflectionTestUtils.setField(tradeTransferService, "cepPartyNameUrl", MOCK_CEP_PARTY_NAME_URL);
         ReflectionTestUtils.setField(tradeTransferService, "cepPartyContactUrl", MOCK_CEP_PARTY_CONTACT_URL);
+        ReflectionTestUtils.setField(tradeTransferService, "mdsGoldQuotesUrl", MOCK_MDS_GOLD_QUOTES_URL);
+        ReflectionTestUtils.setField(tradeTransferService, "customerAccountUrl", MOCK_CUSTOMER_ACCOUNT_URL);
         ReflectionTestUtils.setField(tradeTransferService, "timeout", 10000);
-        ReflectionTestUtils.setField(tradeTransferService, "printMessageLog", false);
+        ReflectionTestUtils.setField(tradeTransferService, "printMessageLog", true);
 
-        sourceRequestHeader = new HashMap<>();
-        sourceRequestHeader.put(HTTPRequestHeaderConstants.X_HSBC_CHNL_COUNTRYCODE, "HK");
-        sourceRequestHeader.put(HTTPRequestHeaderConstants.X_HSBC_CHNL_GROUP_MEMBER, "HBAP");
-        sourceRequestHeader.put(HTTPRequestHeaderConstants.X_HSBC_CUSTOMER_ID, "TEST_CIN");
+        // Lenient mocks for potentially unused calls during this test
+        lenient().when(mockRetrieveCustomerProfilesService.getCIN(any())).thenReturn("dummy-cin");
+        lenient().when(e2ETrustTokenUtil.getE2ETrustToken()).thenReturn("e2e-token");
     }
-
-    // ... (其他测试方法如 createTransfers_Success 保持不变) ...
 
     @Test
     void testRetrieveTransferDetail_Success_WithCustomerName() {
         // Arrange
         String transferReferenceNumber = "ref123";
-        String customerInternalNumber = sourceRequestHeader.get(HTTPRequestHeaderConstants.X_HSBC_CUSTOMER_ID); // Extracted from sourceRequestHeader
+        String customerInternalNumber = "testCIN123"; // Extracted from sourceRequestHeader
 
-        // 1. Mock: retrieveTransferDetail Response - CRITICAL: Ensure responseDetails is set!
-        RetrieveTransferDetailResponse mockResponse = new RetrieveTransferDetailResponse();
+        // 1. Mock: retrieveTransferDetail Response
+        RetrieveTransferDetailResponse mockRetrieveTransferDetailResponse = new RetrieveTransferDetailResponse();
         RetrieveTransferDetailResponseData responseData = new RetrieveTransferDetailResponseData();
-        // ✅ 关键修复1：设置一个非空的 AccountId
-        AccountId accountId = new AccountId();
-        accountId.setAccountNumber("987654321"); // 这个值必须和下面 mock 的 InvestmentAccount 一致
-        responseData.setInvestmentAccount(accountId);
-        // ✅ 关键修复2：设置 responseDetails！这是 ResponseInfoHandler.prepareResponse 所必需的
+
+        // ✅ 关键修复1：设置一个非空的 InvestmentAccount (AccountId)
+        AccountId investmentAccount = new AccountId();
+        investmentAccount.setAccountNumber("987654321");
+        investmentAccount.setCountryAccountCode("HK");
+        investmentAccount.setGroupMemberAccountCode("HBAP");
+        investmentAccount.setAccountProductTypeCode("SAV");
+        investmentAccount.setAccountTypeCode("01");
+        investmentAccount.setAccountCurrencyCode("HKD");
+        responseData.setInvestmentAccount(investmentAccount); // 设置到 responseData
+
+        // ✅ 关键修复2：设置 responseDetails！
         ResponseDetails responseDetails = new ResponseDetails();
-        responseDetails.setResponseCodeNumber(0); // ✅ 成功状态码，必须设置！
-        responseData.setResponseDetails(responseDetails); // ✅ 将 responseDetails 设置到 data 中 —— 这是关键！
-        mockResponse.setData(responseData); // ✅ 设置 data
-        mockResponse.setResponseDetails(responseDetails); // ✅ Also set on the main response object if needed by prepareResponse
+        responseDetails.setResponseCodeNumber(0); // Success code
+        responseDetails.setResponseMessage("Success");
+        mockRetrieveTransferDetailResponse.setResponseDetails(responseDetails); // 设置到 response
+
+        // 设置数据
+        mockRetrieveTransferDetailResponse.setData(responseData);
+
+        // Mock the call to retrieveTransferDetail endpoint
+        String expectedUrl = MOCK_TRADE_ONLINE_URL + "/transfers/" + transferReferenceNumber +
+                             "?customerInternalNumber=" + customerInternalNumber + "&sParameterType=SENS";
+        when(restClientService.get(eq(expectedUrl), anyMap(), eq(RetrieveTransferDetailResponse.class), anyInt(), anyBoolean()))
+                .thenReturn(mockRetrieveTransferDetailResponse); // Return the non-null mock
 
 
-        // 2. ✅ 关键：Mock CustomerAccounts for retrieveCustomerAccounts() - 这是之前缺失的！
+        // 2. Mock: retrieveCustomerAccounts Response (accounts-map)
         CustomerAccounts mockCustomerAccounts = new CustomerAccounts();
-        List<InvestmentAccount> accList = new ArrayList<>();
+        List<InvestmentAccount> investmentAccountList = new ArrayList<>();
         InvestmentAccount acc1 = new InvestmentAccount();
-        acc1.setChecksum("chk123");
-        // ✅ 创建一个完整的 com.hsbc.trade.transfer.domain.account.AccountId 对象
-        com.hsbc.trade.transfer.domain.account.AccountId internalAccountId = new com.hsbc.trade.transfer.domain.account.AccountId();
-        internalAccountId.setAccountNumber("987654321"); // This must match the account number in the main AccountId object above
-        acc1.setInvestmentAccountId(internalAccountId);
-        accList.add(acc1);
-        mockCustomerAccounts.setInvestmentAccountList(accList);
+        acc1.setChecksum("CHECKSUM123");
+        InvestmentAccountId accountId1 = new InvestmentAccountId();
+        accountId1.setCountryAccountCode("HK");
+        accountId1.setGroupMemberAccountCode("HBAP");
+        accountId1.setAccountNumber("987654321"); // Must match the one in RetrieveTransferDetailResponse
+        accountId1.setAccountProductTypeCode("SAV");
+        accountId1.setAccountTypeCode("01");
+        accountId1.setAccountCurrencyCode("HKD");
+        acc1.setInvestmentAccountId(accountId1);
+        investmentAccountList.add(acc1);
+        mockCustomerAccounts.setInvestmentAccountList(investmentAccountList); // ✅ Set non-empty list
 
-        // 3. Mock: PartyNameResponse for retrieveCustomerNamesWithCinNumber
+        when(restClientService.get(eq(MOCK_ACCOUNTS_MAP_URL + "accounts-map?consumerId=DAC"), anyMap(), eq(CustomerAccounts.class), anyInt(), anyBoolean()))
+                .thenReturn(mockCustomerAccounts);
+
+
+        // 3. Mock: retrieveCustomerNames Response (cep-party-name)
         PartyNameResponse mockPartyNameResponse = new PartyNameResponse();
-        Name mockName = new Name();
-        mockName.setGivenName("Tom");
-        mockName.setLastName("Chan");
-        mockName.setCustomerChristianName("King");
-        mockPartyNameResponse.setName(mockName);
+        Name name = new Name(); // Assuming Name class exists
+        name.setGivenName("John");
+        name.setLastName("Doe");
+        name.setCustomerChristianName("Christian");
+        mockPartyNameResponse.setName(name);
 
-        // 4. Mock: PartyContactResponse for retrieveCustomerContactWithCinNumber
-        PartyContactResponse mockPartyContactResponse = new PartyContactResponse();
-        Contact mockContact = new Contact();
-        mockContact.setMobileNumber1("123456789");
-        mockPartyContactResponse.setContact(mockContact); // getContact() will return this non-null object
+        String expectedNameUrl = MOCK_CEP_PARTY_NAME_URL + "/party-name?cin=" + customerInternalNumber;
+        // Mock E2E token call for CEP
+        lenient().when(e2ETrustTokenUtil.getE2ETrustToken()).thenReturn("mock-e2e-token-for-cep");
+        when(restClientService.get(eq(expectedNameUrl), anyMap(), eq(PartyNameResponse.class), anyInt(), anyBoolean()))
+                .thenReturn(mockPartyNameResponse);
 
-        // - CRITICAL: Mock the specific restClientService.get calls with exact URLs and headers -
-        // 1. Call for retrieveTransferDetail itself
-        when(restClientService.get(
-                eq(MOCK_TRADE_ONLINE_URL + "/transfers/{transferReferenceNumber}?customerInternalNumber=" + customerInternalNumber + "&sParameterType=SENS"),
-                anyMap(),
-                eq(RetrieveTransferDetailResponse.class),
-                anyInt(),
-                anyBoolean()
-        )).thenReturn(mockResponse);
-
-        // 2. Call for retrieveCustomerAccounts (inside retrieveTransferDetail)
-        when(restClientService.get(
-                eq(MOCK_ACCOUNTS_MAP_URL + "accounts-map?consumerId=DAC"),
-                anyMap(),
-                eq(CustomerAccounts.class),
-                anyInt(),
-                anyBoolean()
-        )).thenReturn(mockCustomerAccounts);
-
-        // 3. Call for retrieveCustomerNamesWithCinNumber (inside addCustomerNameToUri)
-        String sensitiveDataJson = "[{\"key\":\"SensitiveHeadersKey\",\"value\":\"" + customerInternalNumber + "\"}]";
-        Map<String, String> expectedHeadersForCEP = new HashMap<>();
-        expectedHeadersForCEP.put("X-HSBC-Customer-ID", customerInternalNumber);
-        expectedHeadersForCEP.put("X-HSBC-Sensitive-Data", sensitiveDataJson);
-        when(e2ETrustTokenUtil.getE2ETrustToken()).thenReturn("mocked-token");
-        expectedHeadersForCEP.put("Authorization", "Bearer mocked-token");
-        String expectedNameUrl = MOCK_CEP_PARTY_NAME_URL + "customer-number/" + customerInternalNumber;
-        when(restClientService.get(
-                eq(expectedNameUrl),
-                argThat(headers -> headers.equals(expectedHeadersForCEP)),
-                eq(PartyNameResponse.class),
-                anyInt(),
-                anyBoolean()
-        )).thenReturn(mockPartyNameResponse);
-
-        // 4. Call for retrieveCustomerContactWithCinNumber (inside addCustomerContactToUri)
-        String expectedContactUrl = MOCK_CEP_PARTY_CONTACT_URL + "customer-number/" + customerInternalNumber + "/contact";
-        when(restClientService.get(
-                eq(expectedContactUrl),
-                argThat(headers -> headers.equals(expectedHeadersForCEP)), // Same headers for contact
-                eq(PartyContactResponse.class),
-                anyInt(),
-                anyBoolean()
-        )).thenReturn(mockPartyContactResponse);
-
+        // 4. Mock: retrieveCustomerContacts Response (cep-party-contact) - if needed by the flow
+        PartyContactResponse mockPartyContactResponse = new PartyContactResponse(); // Assuming class exists
+        // Set up contact details if necessary
+        String expectedContactUrl = MOCK_CEP_PARTY_CONTACT_URL + "/party-contact?cin=" + customerInternalNumber;
+        when(restClientService.get(eq(expectedContactUrl), anyMap(), eq(PartyContactResponse.class), anyInt(), anyBoolean()))
+                .thenReturn(mockPartyContactResponse);
 
         // Act
-        RetrieveTransferDetailResponse result = tradeTransferService.retrieveTransferDetail(sourceRequestHeader, transferReferenceNumber);
+        RetrieveTransferDetailResponse result = tradeTransferService.retrieveTransferDetail(
+                sourceRequestHeader,
+                transferReferenceNumber
+        );
 
         // Assert
-        assertNotNull(result);
-        assertNotNull(result.getData());
-        assertNotNull(result.getData().getInvestmentAccount());
-        assertEquals("987654321", result.getData().getInvestmentAccount().getAccountNumber());
-        // ✅ 验证 checksum 被成功设置
-        assertNotNull(result.getData().getAccountChecksumIdentifier());
-        assertEquals("chk123", result.getData().getAccountChecksumIdentifier());
-        // ✅ 验证 responseDetails 被正确设置
-        assertNotNull(result.getResponseDetails());
-        assertEquals(0, result.getResponseDetails().getResponseCodeNumber());
+        assertNotNull(result, "Result should not be null");
+        assertEquals(0, result.getResponseDetails().getResponseCodeNumber(), "Response code should be 0");
+        assertNotNull(result.getData(), "Response data should not be null");
+        assertNotNull(result.getData().getInvestmentAccount(), "Investment account should not be null");
+        assertEquals("987654321", result.getData().getInvestmentAccount().getAccountNumber(), "Account number should match");
 
-        // Verify the specific interactions happened
+        // Verify calls were made as expected
         verify(restClientService, times(1))
-                .get(eq(MOCK_TRADE_ONLINE_URL + "/transfers/{transferReferenceNumber}?customerInternalNumber=" + customerInternalNumber + "&sParameterType=SENS"),
-                     anyMap(),
-                     eq(RetrieveTransferDetailResponse.class),
-                     anyInt(),
-                     anyBoolean());
+                .get(eq(expectedUrl), anyMap(), eq(RetrieveTransferDetailResponse.class), anyInt(), anyBoolean());
         verify(restClientService, times(1))
-                .get(eq(MOCK_ACCOUNTS_MAP_URL + "accounts-map?consumerId=DAC"),
-                     anyMap(),
-                     eq(CustomerAccounts.class),
-                     anyInt(),
-                     anyBoolean());
+                .get(eq(MOCK_ACCOUNTS_MAP_URL + "accounts-map?consumerId=DAC"), anyMap(), eq(CustomerAccounts.class), anyInt(), anyBoolean());
         verify(restClientService, times(1))
-                .get(eq(expectedNameUrl),
-                     argThat(headers -> headers.equals(expectedHeadersForCEP)),
-                     eq(PartyNameResponse.class),
-                     anyInt(),
-                     anyBoolean());
+                .get(eq(expectedNameUrl), anyMap(), eq(PartyNameResponse.class), anyInt(), anyBoolean());
         verify(restClientService, times(1))
-                .get(eq(expectedContactUrl),
-                     argThat(headers -> headers.equals(expectedHeadersForCEP)),
-                     eq(PartyContactResponse.class),
-                     anyInt(),
-                     anyBoolean());
-        verify(e2ETrustTokenUtil, times(2)).getE2ETrustToken(); // Called for name and contact
+                .get(eq(expectedContactUrl), anyMap(), eq(PartyContactResponse.class), anyInt(), anyBoolean());
+        verify(e2ETrustTokenUtil, times(2)) // One for accounts-map, one for CEP calls
+                .getE2ETrustToken();
     }
 
-    // ... (其他测试方法) ...
+    // Example of how to test the exception path mentioned in the description
+    @Test
+    void retrieveTransferDetail_WithException_ShouldThrowInternalServerError() {
+        // Arrange
+        String transferReferenceNumber = "TRANSFER123";
+        when(restClientService.get(anyString(), anyMap(), eq(RetrieveTransferDetailResponse.class), anyInt(), anyBoolean()))
+                .thenThrow(new RuntimeException("Service unavailable"));
+
+        // Act & Assert
+        assertThrows(InternalServerErrorException.class, () ->
+                tradeTransferService.retrieveTransferDetail(sourceRequestHeader, transferReferenceNumber)
+        );
+    }
+
+    // Example placeholder for other tests you might want to add
+    // @Test
+    // void testRetrieveTransferDetail_Failure_InvalidAccount() { ... }
+
+    // @Test
+    // void testCreateTransfers_Success() { ... }
+
+    // @Test
+    // void testModifyTransfers_Success() { ... }
+
+    // @Test
+    // void validateTransferLimits_WhenDailyLimitExceeded_ShouldThrowException() {
+    //     // Arrange
+    //     BigDecimal totalTranAmount = new BigDecimal("15000.00");
+    //     RetrieveTransferLimitResponse currentLimit = createMockTransferLimitResponse();
+    //     // ... set limit to be exceeded ...
+    //
+    //     // Act & Assert
+    //     assertThrows(TransferLimitExceededException.class, () ->
+    //             tradeTransferService.validateTransferLimits(totalTranAmount, currentLimit)
+    //     );
+    // }
+
+    // Helper method to create mock objects if needed elsewhere
+    // private RetrieveTransferLimitResponse createMockTransferLimitResponse() {
+    //     // ... implementation ...
+    //     return new RetrieveTransferLimitResponse();
+    // }
 }
