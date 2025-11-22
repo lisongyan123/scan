@@ -1,105 +1,76 @@
 @Test
-void retrieveTransferList_Success() {
+void createTransfers_Success() {
     // Arrange
-    String cin = "CUST123";
-    Map<String, String> requestHeader = new HashMap<>();
-    requestHeader.put(HTTPRequestHeaderConstants.X_HSBC_CUSTOMER_ID, cin);
-    requestHeader.put(HTTPRequestHeaderConstants.X_HSBC_SAML, "<saml>token</saml>");
-    requestHeader.put(HTTPRequestHeaderConstants.X_HSBC_CHNL_COUNTRYCODE, "HK");
-    requestHeader.put(HTTPRequestHeaderConstants.X_HSBC_CHNL_GROUP_MEMBER, "HBAP");
+    CreateTransferRequest request = new CreateTransferRequest();
+    CreateTransferRequestData data = new CreateTransferRequestData();
+    request.setData(data);
+    // Set sender checksum
+    request.getData().setSenderInvestmentAccountChecksumIdentifier("CHECKSUM123");
+    request.getData().setActionRequestCode(ActionRequestCode.D);
 
-    // 1. Mock retrieveCustomerAccounts → 保证 accountIdMap 不为空
-    CustomerAccounts mockAccounts = new CustomerAccounts();
-    List<InvestmentAccount> accounts = new ArrayList<>();
-    
-    InvestmentAccount acc1 = new InvestmentAccount();
-    acc1.setChecksum("CHK123");
-    com.hsbc.trade.transfer.domain.InvestmentAccountId id1 = new com.hsbc.trade.transfer.domain.InvestmentAccountId();
-    id1.setCountryAccountCode("HK");
-    id1.setGroupMemberAccountCode("HBAP");
-    id1.setAccountNumber("123456789");
-    id1.setAccountProductTypeCode("SAV");
-    id1.setAccountTypeCode("01");
-    id1.setAccountCurrencyCode("HKD");
-    acc1.setInvestmentAccountId(id1);
-    accounts.add(acc1);
+    // Create receiver list
+    List<ReceiverInfo> receivers = new ArrayList<>();
+    ReceiverInfo receiver = new ReceiverInfo();
+    receiver.setTransferQuantity(new BigDecimal("10.5"));
+    receiver.setReceiverCustomerNumber("RECEIVER123");
+    receivers.add(receiver);
+    request.getData().setReceiverLists(receivers);
 
-    mockAccounts.setInvestmentAccountList(accounts);
+    // ✅ Mock retrieveCustomerAccountIdsList 调用（关键！）
+    RetrieveCustomerAccountsIdListResponse accountIdListResponse = new RetrieveCustomerAccountsIdListResponse();
+    InvestmentAccountId accountId = new InvestmentAccountId();
+    accountId.setCountryAccountCode("HK");
+    accountId.setGroupMemberAccountCode("HBAP");
+    accountId.setAccountNumber("123456789");
+    accountId.setAccountProductTypeCode("SAV");
+    accountId.setAccountTypeCode("01");
+    accountId.setAccountCurrencyCode("HKD");
+
+    InvestmentAccountIdList accountIdList = new InvestmentAccountIdList();
+    accountIdList.setAccountId(accountId);
+    accountIdListResponse.setAccountIdList(Collections.singletonList(accountIdList));
+
+    // Mock the restClientService.get for customerAccountUrl
     when(restClientService.get(
-            eq("https://accounts.map/accounts-map?consumerId=DAC"),
+            argThat(url -> url.contains(MOCK_CUSTOMER_ACCOUNT_URL)),
             anyMap(),
-            eq(CustomerAccounts.class),
+            eq(RetrieveCustomerAccountsIdListResponse.class),
             anyInt(),
             anyBoolean()
-    )).thenReturn(mockAccounts);
+    )).thenReturn(accountIdListResponse);
 
-    // 2. Mock CEP Name
-    PartyNameResponse nameResp = new PartyNameResponse();
-    PartyName name = new PartyName();
-    name.setLastName("Doe");
-    name.setGivenName("John");
-    name.setCustomerChristianName("Michael");
-    nameResp.setName(name);
-    when(restClientService.get(
-            eq("https://cep.name/CUST123"),
-            argThat(h -> h.containsKey(HTTPRequestHeaderConstants.X_HSBC_E2E_TRUST_TOKEN)),
-            eq(PartyNameResponse.class),
-            anyInt(),
-            anyBoolean()
-    )).thenReturn(nameResp);
+    // Mock other external calls
+    CreateTransferResponse mockResponse = new CreateTransferResponse();
+    ResponseDetails responseDetails = new ResponseDetails();
+    responseDetails.setResponseCodeNumber(0);
+    mockResponse.setResponseDetails(responseDetails);
 
-    // 3. Mock CEP Contact
-    PartyContactResponse contactResp = new PartyContactResponse();
-    PartyContact contact = new PartyContact();
-    contact.setMobileNumber1("123456789");
-    contactResp.setContact(contact);
-    when(restClientService.get(
-            eq("https://cep.contact/CUST123"),
-            argThat(h -> h.containsKey(HTTPRequestHeaderConstants.X_HSBC_E2E_TRUST_TOKEN)),
-            eq(PartyContactResponse.class),
-            anyInt(),
-            anyBoolean()
-    )).thenReturn(contactResp);
+    RetrieveTransferLimitResponse limitResponse = createMockTransferLimitResponse();
+    GoldPriceResponse goldPriceResponse = createMockGoldPriceResponse();
+    RuleResponse sreResponse = new RuleResponse();
 
-    // 4. Mock 主接口返回
-    RetrieveTransferListResponse mainResp = new RetrieveTransferListResponse();
-    RetrieveTransferListResponseData data = new RetrieveTransferListResponseData();
-    data.setTransferLists(new ArrayList<>());
-    mainResp.setData(data);
-    mainResp.setResponseDetails(new com.hsbc.trade.common.ResponseDetails());
-
-    // 构建最终 URL（含所有 query 参数）
-    String expectedUrl = "https://trade.online/transfers" +
-            "?transferStatusCode=ACCEPTED" +
-            "&pagination=1" +
-            "&productId=PROD1" +
-            "&sParameterType=PLAIN_TEXT" +
-            "&customerInternalNumber=CUST123" +
-            "&lastName=Doe" +
-            "&firstName=John" +
-            "&christianName=Michael" +
-            "&telephoneNumber=123456789" +
-            "&checksumIdentifiers=CHK123";
-
-    when(restClientService.get(
-            eq(expectedUrl),
-            anyMap(),
-            eq(RetrieveTransferListResponse.class),
-            anyInt(),
-            anyBoolean()
-    )).thenReturn(mainResp);
-
-    // 5. Mock E2E Token
-    when(e2ETrustTokenUtil.getE2ETrustToken()).thenReturn("mock-e2e-token");
+    when(tradeLimitService.retrieveLimitations(anyMap())).thenReturn(limitResponse);
+    when(restClientService.post(anyString(), anyMap(), any(CreateTransferRequest.class),
+            eq(CreateTransferResponse.class), anyInt(), anyBoolean())).thenReturn(mockResponse);
+    when(sreValidationService.callSreForTransferValidation(anyString(), anyString(), anyString(), anyMap()))
+            .thenReturn(sreResponse);
+    when(restClientService.get(anyString(), anyMap(), eq(GoldPriceResponse.class), anyInt(), anyBoolean()))
+            .thenReturn(goldPriceResponse); // mock GoldPrice call if ActionRequestCode == D
 
     // Act
-    RetrieveTransferListResponse result = tradeTransferService.retrieveTransferList(
-            requestHeader, "ACCEPTED", Arrays.asList("CHK123"), "1", "PROD1", "PLAIN_TEXT"
-    );
+    CreateTransferResponse result = tradeTransferService.createTransfers(sourceRequestHeader, request);
 
     // Assert
     assertNotNull(result);
     assertEquals(0, result.getResponseDetails().getResponseCodeNumber());
-    verify(restClientService, times(1))
-            .get(eq(expectedUrl), anyMap(), eq(RetrieveTransferListResponse.class), anyInt(), anyBoolean());
+    verify(tradeLimitService, times(1)).retrieveLimitations(anyMap());
+    verify(restClientService, times(1)).get(
+            argThat(url -> url.contains(MOCK_CUSTOMER_ACCOUNT_URL)),
+            anyMap(),
+            eq(RetrieveCustomerAccountsIdListResponse.class),
+            anyInt(),
+            anyBoolean()
+    );
+    verify(restClientService, times(1)).post(anyString(), anyMap(), any(CreateTransferRequest.class),
+            eq(CreateTransferResponse.class), anyInt(), anyBoolean());
 }
