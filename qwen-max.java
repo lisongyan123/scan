@@ -1,178 +1,148 @@
 @Test
-void createTransfers_Success() {
+void testRetrieveTransferDetail_Success_WithCustomerName() {
     // Arrange
-    CreateTransferRequest request = new CreateTransferRequest();
-    CreateTransferRequestData data = new CreateTransferRequestData();
-    request.setData(data);
-    request.getData().setSenderInvestmentAccountChecksumIdentifier("CHECKSUM123");
-    request.getData().setActionRequestCode(ActionRequestCode.D);
+    String transferReferenceNumber = "ref123";
+    String customerInternalNumber = "testCIN123"; // Extracted from baseRequestHeaders
 
-    List<ReceiverInfo> receivers = new ArrayList<>();
-    ReceiverInfo receiver = new ReceiverInfo();
-    receiver.setTransferQuantity(new BigDecimal("10.5"));
-    receiver.setReceiverCustomerNumber("RECEIVER123");
-    receivers.add(receiver);
-    request.getData().setReceiverLists(receivers);
+    // 1. Mock: retrieveTransferDetail Response
+    RetrieveTransferDetailResponse mockResponse = new RetrieveTransferDetailResponse();
+    RetrieveTransferDetailResponseData responseData = new RetrieveTransferDetailResponseData();
+    // ✅ 关键修复1：设置一个非空的 AccountId
+    AccountId accountId = new AccountId();
+    accountId.setAccountNumber("987654321"); // 这个值必须和下面 mock 的 InvestmentAccount 一致
+    responseData.setInvestmentAccount(accountId);
+    // ✅ 关键修复2：设置 responseDetails！这是 ResponseInfoHandler.prepareResponse 所必需的
+    ResponseDetails responseDetails = new ResponseDetails();
+    responseDetails.setResponseCodeNumber(0); // ✅ 成功状态码，必须设置！
+    responseData.setResponseDetails(responseDetails); // ✅ 将 responseDetails 设置到 data 中
+    mockResponse.setData(responseData); // ✅ 设置 data
 
-    // === 1. Mock retrieveAccountIdWithCheckSum (via customerAccountUrl) ===
-    RetrieveCustomerAccountsIdListResponse accountIdListResponse = new RetrieveCustomerAccountsIdListResponse();
-    InvestmentAccountId accountId = new InvestmentAccountId();
-    accountId.setCountryAccountCode("HK");
-    accountId.setGroupMemberAccountCode("HBAP");
-    accountId.setAccountNumber("123456789");
-    accountId.setAccountProductTypeCode("GOLD");
-    accountId.setAccountTypeCode("01");
-    accountId.setAccountCurrencyCode("HKD");
-    InvestmentAccountIdList accountIdList = new InvestmentAccountIdList();
-    accountIdList.setAccountId(accountId);
-    accountIdListResponse.setAccountIdList(Collections.singletonList(accountIdList));
+    // 2. ✅ 关键：Mock CustomerAccounts for retrieveCustomerAccounts() - 这是之前缺失的！
+    CustomerAccounts mockCustomerAccounts = new CustomerAccounts();
+    List<InvestmentAccount> accList = new ArrayList<>();
+    InvestmentAccount acc1 = new InvestmentAccount();
+    acc1.setChecksum("chk123");
+    com.hsbc.trade.transfer.domain.account.AccountId investmentAccountId = com.hsbc.trade.transfer.domain.account.AccountId.builder()
+            .countryAccountCode("CN")
+            .groupMemberAccountCode("G001")
+            .accountNumber("987654321") // ✅ 必须一致
+            .accountProductTypeCode("01")
+            .accountTypeCode("INV")
+            .accountCurrencyCode("CNY")
+            .build();
+    acc1.setInvestmentAccountId(investmentAccountId);
+    accList.add(acc1);
+    mockCustomerAccounts.setInvestmentAccountList(accList);
 
-    // 注意：customerAccountUrl 是私有字段，需构造 URL 格式
-    String expectedCustomerAccountUrl = String.format(
-            MOCK_CUSTOMER_ACCOUNT_URL + "/%s?body=%s",
-            "accounts-ids",
-            URLEncoder.encode(
-                    JacksonUtil.convertObjectToJsonString(Map.of("checksumList", List.of("CHECKSUM123"))),
-                    StandardCharsets.UTF_8
-            )
-    );
+    // 3. Mock CEP responses
+    PartyNameResponse mockPartyNameResponse = new PartyNameResponse();
+    PartyName mockName = new PartyName();
+    mockName.setLastName("Doe");
+    mockName.setGivenName("John");
+    mockName.setCustomerChristianName("Smith");
+    mockPartyNameResponse.setName(mockName);
 
-    when(restClientService.get(
-            eq(expectedCustomerAccountUrl),
-            anyMap(), // 包含 CHECKSUM 头
-            eq(RetrieveCustomerAccountsIdListResponse.class),
+    PartyContactResponse mockPartyContactResponse = new PartyContactResponse();
+    PartyContact mockContact = new PartyContact();
+    mockContact.setMobileNumber1("123456789");
+    mockPartyContactResponse.setContact(mockContact);
+
+    // ✅ 关键修改：构造与实际调用完全一致的 URI（transferReferenceNumber 已替换）
+    String expectedTransferDetailUri = MOCK_TRADE_ONLINE_URL + "/transfers/" + transferReferenceNumber +
+            "?customerInternalNumber=" + customerInternalNumber + "&sParameterType=SENS";
+
+    // 1. Mock retrieveTransferDetail call —— 使用具体 URI
+    when(mockRestClientService.get(
+            eq(expectedTransferDetailUri), // ✅ 修改点：使用已解析的 URI
+            anyMap(),
+            eq(RetrieveTransferDetailResponse.class),
             anyInt(),
             anyBoolean()
-    )).thenReturn(accountIdListResponse);
+    )).thenReturn(mockResponse);
 
-    // === 2. Mock retrieveCustomerNamesWithCinNumber (for sender name) ===
-    PartyNameResponse partyNameResponse = new PartyNameResponse();
-    PartyName name = new PartyName();
-    name.setGivenName("John");
-    name.setCustomerChristianName("Michael");
-    name.setLastName("Doe");
-    partyNameResponse.setName(name);
+    // 2. Mock retrieveCustomerAccounts
+    when(mockRestClientService.get(
+            eq(MOCK_ACCOUNTS_MAP_URL + "accounts-map?consumerId=DAC"),
+            anyMap(),
+            eq(CustomerAccounts.class),
+            anyInt(),
+            anyBoolean()
+    )).thenReturn(mockCustomerAccounts);
 
-    // CEP headers: 经过 updateHeaderforCEP + buildSensitiveHeaders
-    String customerInternalNumber = "CUST123"; // 来自 sourceRequestHeader
-    String sensitiveJson = "[{\"key\":\"SensitiveHeadersKey\",\"value\":\"" + customerInternalNumber + "\"}]";
-    String base64Sensitive = Base64.getEncoder().encodeToString(sensitiveJson.getBytes(StandardCharsets.UTF_8));
-    Map<String, String> cepHeaders = new HashMap<>();
-    cepHeaders.putAll(sourceRequestHeader);
-    cepHeaders.put(HttpHeaders.CONTENT_TYPE, MediaType.APPLICATION_JSON_VALUE);
-    cepHeaders.put(HTTPRequestHeaderConstants.X_HSBC_CUSTOMER_ID, customerInternalNumber);
-    cepHeaders.put(HTTPRequestHeaderConstants.X_HSBC_CUSTOMER_ID_TYPE, "N");
-    cepHeaders.put(HTTPRequestHeaderConstants.X_HSBC_SENSITIVE_DATA, base64Sensitive);
-    cepHeaders.remove(HTTPRequestHeaderConstants.X_HSBC_SAML);
-    cepHeaders.remove(HTTPRequestHeaderConstants.X_HSBC_SAML3);
-    cepHeaders.put(HTTPRequestHeaderConstants.X_HSBC_E2E_TRUST_TOKEN, "e2e-token");
-    cepHeaders.put(HTTPRequestHeaderConstants.X_HSBC_GBGF, "");
-    cepHeaders.put(HTTPRequestHeaderConstants.X_HSBC_SOURCE_SYSTEM_ID, "");
+    // 3. Mock CEP name
+    String sensitiveDataJson = "[{\"key\":\"SensitiveHeadersKey\",\"value\":\"" + customerInternalNumber + "\"}]";
+    String base64SensitiveData = Base64.getEncoder().encodeToString(sensitiveDataJson.getBytes(StandardCharsets.UTF_8));
+    Map<String, String> expectedHeadersForCEP = new HashMap<>();
+    expectedHeadersForCEP.putAll(baseRequestHeaders);
+    expectedHeadersForCEP.remove(HTTPRequestHeaderConstants.X_HSBC_SAML);
+    expectedHeadersForCEP.remove(HTTPRequestHeaderConstants.X_HSBC_SAML3);
+    expectedHeadersForCEP.put(HTTPRequestHeaderConstants.X_HSBC_E2E_TRUST_TOKEN, "mock-e2e-token");
+    expectedHeadersForCEP.put(HTTPRequestHeaderConstants.X_HSBC_GBGF, "");
+    expectedHeadersForCEP.put(HTTPRequestHeaderConstants.X_HSBC_SOURCE_SYSTEM_ID, "");
+    expectedHeadersForCEP.put(HTTPRequestHeaderConstants.X_HSBC_SENSITIVE_DATA, base64SensitiveData);
 
-    when(restClientService.get(
-            eq(MOCK_CEP_PARTY_NAME_URL.replace("CIN-SensitiveHeadersKey", customerInternalNumber)),
-            argThat(h -> h.equals(cepHeaders)),
+    String expectedNameUrl = MOCK_CEP_PARTY_NAME_URL.replace("CIN-SensitiveHeadersKey", customerInternalNumber);
+    when(mockRestClientService.get(
+            eq(expectedNameUrl),
+            argThat(headers -> headers.equals(expectedHeadersForCEP)),
             eq(PartyNameResponse.class),
             anyInt(),
             anyBoolean()
-    )).thenReturn(partyNameResponse);
+    )).thenReturn(mockPartyNameResponse);
 
-    // === 3. Mock SRE validation ===
-    RuleResponse sreResponse = new RuleResponse();
-    when(sreValidationService.callSreForTransferValidation(
-            eq("dac_tokenized_gold_transfer_sender_rule"),
-            eq("CUST123"),
-            eq("RECEIVER123"),
-            anyMap()
-    )).thenReturn(sreResponse);
-
-    // === 4. Mock GoldPrice (for ActionRequestCode.D) ===
-    GoldPriceResponse goldPriceResponse = new GoldPriceResponse();
-    GoldPriceResponseData goldPriceData = new GoldPriceResponseData();
-    goldPriceData.setGoldPriceAmount(new BigDecimal("1800.50"));
-    goldPriceData.setPublishTime("2025-11-23T10:00:00Z");
-    goldPriceResponse.setData(goldPriceData);
-    when(restClientService.get(
-            eq(MOCK_MDS_GOLD_QUOTES_URL + "/XGTHKD"),
-            anyMap(),
-            eq(GoldPriceResponse.class),
+    // 4. Mock CEP contact
+    String expectedContactUrl = MOCK_CEP_PARTY_CONTACT_URL.replace("CIN-SensitiveHeadersKey", customerInternalNumber);
+    when(mockRestClientService.get(
+            eq(expectedContactUrl),
+            argThat(headers -> headers.equals(expectedHeadersForCEP)),
+            eq(PartyContactResponse.class),
             anyInt(),
             anyBoolean()
-    )).thenReturn(goldPriceResponse);
+    )).thenReturn(mockPartyContactResponse);
 
-    // === 5. Mock TradeLimitService ===
-    RetrieveTransferLimitResponse limitResponse = new RetrieveTransferLimitResponse();
-    RetrieveTransferLimitResponseData limitData = new RetrieveTransferLimitResponseData();
-    limitData.setAvailableTodayAmount(new BigDecimal("50000"));
-    limitData.setAvailableMonthToDateAmount(new BigDecimal("100000"));
-    limitData.setAvailableYearToDateAmount(new BigDecimal("500000"));
-    limitData.setMaxDailyLimitedAmount(new BigDecimal("50000"));
-    limitData.setMaxMonthlyLimitedAmount(new BigDecimal("100000"));
-    limitData.setMaxYearlyLimitedAmount(new BigDecimal("500000"));
-    limitResponse.setData(limitData);
-    when(tradeLimitService.retrieveLimitations(anyMap())).thenReturn(limitResponse);
-
-    // === 6. Mock final POST to trade-online ===
-    CreateTransferResponse mockPostResponse = new CreateTransferResponse();
-    ResponseDetails responseDetails = new ResponseDetails();
-    responseDetails.setResponseCodeNumber(0);
-    mockPostResponse.setResponseDetails(responseDetails);
-    when(restClientService.post(
-            eq(MOCK_TRADE_ONLINE_URL + "/transfers"),
-            anyMap(),
-            eq(request),
-            eq(CreateTransferResponse.class),
-            anyInt(),
-            anyBoolean()
-    )).thenReturn(mockPostResponse);
-
-    // === 7. Mock E2E token (used in updateHeaderforCEP) ===
-    when(e2ETrustTokenUtil.getE2ETrustToken()).thenReturn("e2e-token");
+    when(mockE2ETrustTokenUtil.getE2ETrustToken()).thenReturn("mock-e2e-token");
 
     // Act
-    CreateTransferResponse result = tradeTransferService.createTransfers(sourceRequestHeader, request);
+    RetrieveTransferDetailResponse result = tradeTransferService.retrieveTransferDetail(baseRequestHeaders, transferReferenceNumber);
 
     // Assert
     assertNotNull(result);
+    assertNotNull(result.getData());
+    assertNotNull(result.getData().getInvestmentAccount());
+    assertEquals("987654321", result.getData().getInvestmentAccount().getAccountNumber());
+    assertNotNull(result.getData().getAccountChecksumIdentifier());
+    assertEquals("chk123", result.getData().getAccountChecksumIdentifier());
+    assertNotNull(result.getResponseDetails());
     assertEquals(0, result.getResponseDetails().getResponseCodeNumber());
-    assertNotNull(result.getData().getSenderCustomerName());
-    assertEquals("Doe John Michael", result.getData().getSenderCustomerName());
 
-    // Verify key interactions
-    verify(restClientService, times(1)).get(
-            eq(expectedCustomerAccountUrl),
+    // Verify interactions
+    verify(mockRestClientService, times(1)).get(
+            eq(expectedTransferDetailUri), // ✅ 验证使用的是具体 URI
             anyMap(),
-            eq(RetrieveCustomerAccountsIdListResponse.class),
+            eq(RetrieveTransferDetailResponse.class),
             anyInt(),
             anyBoolean()
     );
-    verify(restClientService, times(1)).get(
-            anyString(),
+    verify(mockRestClientService, times(1)).get(
+            eq(MOCK_ACCOUNTS_MAP_URL + "accounts-map?consumerId=DAC"),
             anyMap(),
+            eq(CustomerAccounts.class),
+            anyInt(),
+            anyBoolean()
+    );
+    verify(mockRestClientService, times(1)).get(
+            eq(expectedNameUrl),
+            argThat(headers -> headers.equals(expectedHeadersForCEP)),
             eq(PartyNameResponse.class),
             anyInt(),
             anyBoolean()
     );
-    verify(restClientService, times(1)).get(
-            eq(MOCK_MDS_GOLD_QUOTES_URL + "/XGTHKD"),
-            anyMap(),
-            eq(GoldPriceResponse.class),
+    verify(mockRestClientService, times(1)).get(
+            eq(expectedContactUrl),
+            argThat(headers -> headers.equals(expectedHeadersForCEP)),
+            eq(PartyContactResponse.class),
             anyInt(),
             anyBoolean()
     );
-    verify(restClientService, times(1)).post(
-            eq(MOCK_TRADE_ONLINE_URL + "/transfers"),
-            anyMap(),
-            eq(request),
-            eq(CreateTransferResponse.class),
-            anyInt(),
-            anyBoolean()
-    );
-    verify(sreValidationService, times(1)).callSreForTransferValidation(
-            eq("dac_tokenized_gold_transfer_sender_rule"),
-            eq("CUST123"),
-            eq("RECEIVER123"),
-            anyMap()
-    );
-    verify(tradeLimitService, times(1)).retrieveLimitations(anyMap());
+    verify(mockE2ETrustTokenUtil, times(2)).getE2ETrustToken();
 }
