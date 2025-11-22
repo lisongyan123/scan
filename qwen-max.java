@@ -1,37 +1,27 @@
-@BeforeEach
-void setUp() throws NoSuchFieldException, IllegalAccessException {
-    // ... 其他代码 ...
-
-    // ✅ 确保 TradeTransferServiceImpl 使用的是 mock 的 restClientService
-    ReflectionTestUtils.setField(tradeTransferService, "restClientService", restClientService);
-    ReflectionTestUtils.setField(tradeTransferService, "sreValidationService", sreValidationService);
-    // ... 其他字段 ...
-
-    // 删除对 mockRestClientService 的所有使用！
-}
-
 @Test
 void testRetrieveTransferDetail_Success_WithCustomerName() {
     // Arrange
     String transferReferenceNumber = "ref123";
-    String customerInternalNumber = "TESTcin123"; // from baseRequestHeaders
+    String customerInternalNumber = baseRequestHeaders.get(HTTPRequestHeaderConstants.X_HSBC_CUSTOMER_ID); // ← 改为从 baseRequestHeaders 读取
 
-    // 1. Mock main retrieveTransferDetail response
+    // 1. Mock: retrieveTransferDetail Response
     RetrieveTransferDetailResponse mockResponse = new RetrieveTransferDetailResponse();
     RetrieveTransferDetailResponseData responseData = new RetrieveTransferDetailResponseData();
+
     AccountId accountId = new AccountId();
     accountId.setAccountNumber("987654321");
     responseData.setInvestmentAccount(accountId);
+
     ResponseDetails responseDetails = new ResponseDetails();
     responseDetails.setResponseCodeNumber(0);
     responseData.setResponseDetails(responseDetails);
     mockResponse.setData(responseData);
 
-    // 2. Mock CustomerAccounts (for checksum mapping)
+    // 2. Mock CustomerAccounts
     CustomerAccounts mockCustomerAccounts = new CustomerAccounts();
     InvestmentAccount acc1 = new InvestmentAccount();
     acc1.setChecksum("chk123");
-    com.hsbc.trade.transfer.domain.account.AccountId invAccountId = 
+    com.hsbc.trade.transfer.domain.account.AccountId investmentAccountId = 
         com.hsbc.trade.transfer.domain.account.AccountId.builder()
             .countryAccountCode("CN")
             .groupMemberAccountCode("G001")
@@ -40,7 +30,7 @@ void testRetrieveTransferDetail_Success_WithCustomerName() {
             .accountTypeCode("INV")
             .accountCurrencyCode("CNY")
             .build();
-    acc1.setInvestmentAccountId(invAccountId);
+    acc1.setInvestmentAccountId(investmentAccountId);
     mockCustomerAccounts.setInvestmentAccountList(Collections.singletonList(acc1));
 
     // 3. Mock CEP responses
@@ -50,10 +40,29 @@ void testRetrieveTransferDetail_Success_WithCustomerName() {
     contact.setMobileNumber1("123456789");
     mockPartyContactResponse.setContact(contact);
 
-    // --- Build expected URLs and headers ---
+    // --- Build expected URLs ---
     String expectedMainUrl = MOCK_TRADE_ONLINE_URL + "/transfers/" + transferReferenceNumber +
             "?customerInternalNumber=" + customerInternalNumber + "&sParameterType=SENS";
 
+    // Mock main call → ✅ 这是你要求的核心 mock
+    when(restClientService.get(
+            eq(expectedMainUrl),
+            anyMap(),
+            eq(RetrieveTransferDetailResponse.class),
+            anyInt(),
+            anyBoolean()
+    )).thenReturn(mockResponse);
+
+    // Mock accounts map
+    when(restClientService.get(
+            eq(MOCK_ACCOUNTS_MAP_URL + "accounts-map?consumerId=DAC"),
+            anyMap(),
+            eq(CustomerAccounts.class),
+            anyInt(),
+            anyBoolean()
+    )).thenReturn(mockCustomerAccounts);
+
+    // Mock CEP name & contact
     String sensitiveDataJson = "[{\"key\":\"SensitiveHeadersKey\",\"value\":\"" + customerInternalNumber + "\"}]";
     String base64SensitiveData = Base64.getEncoder().encodeToString(sensitiveDataJson.getBytes(StandardCharsets.UTF_8));
     Map<String, String> expectedHeadersForCEP = new HashMap<>(baseRequestHeaders);
@@ -66,23 +75,6 @@ void testRetrieveTransferDetail_Success_WithCustomerName() {
 
     String expectedNameUrl = MOCK_CEP_PARTY_NAME_URL.replace("CIN-SensitiveHeadersKey", customerInternalNumber);
     String expectedContactUrl = MOCK_CEP_PARTY_CONTACT_URL.replace("CIN-SensitiveHeadersKey", customerInternalNumber);
-
-    // --- Mock all calls using `restClientService` (not mockRestClientService!) ---
-    when(restClientService.get(
-            eq(expectedMainUrl),
-            anyMap(),
-            eq(RetrieveTransferDetailResponse.class),
-            anyInt(),
-            anyBoolean()
-    )).thenReturn(mockResponse);
-
-    when(restClientService.get(
-            eq(MOCK_ACCOUNTS_MAP_URL + "accounts-map?consumerId=DAC"),
-            anyMap(),
-            eq(CustomerAccounts.class),
-            anyInt(),
-            anyBoolean()
-    )).thenReturn(mockCustomerAccounts);
 
     when(restClientService.get(
             eq(expectedNameUrl),
