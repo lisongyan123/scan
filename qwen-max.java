@@ -1,3 +1,15 @@
+@BeforeEach
+void setUp() throws NoSuchFieldException, IllegalAccessException {
+    // ... 其他代码 ...
+
+    // ✅ 确保 TradeTransferServiceImpl 使用的是 mock 的 restClientService
+    ReflectionTestUtils.setField(tradeTransferService, "restClientService", restClientService);
+    ReflectionTestUtils.setField(tradeTransferService, "sreValidationService", sreValidationService);
+    // ... 其他字段 ...
+
+    // 删除对 mockRestClientService 的所有使用！
+}
+
 @Test
 void testRetrieveTransferDetail_Success_WithCustomerName() {
     // Arrange
